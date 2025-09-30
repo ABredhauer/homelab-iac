@@ -1,0 +1,21 @@
+# ISO files (too large for git)
+*.iso
+*.img
+
+# Logs and temporary files
+*.log
+*.tmp
+.DS_Store
+
+# Secrets (never commit these)
+secrets/
+*.key
+*.pem
+id_rsa*
+
+# Ansible
+*.retry
+.vault_pass
+
+# Vagrant
+.vagrant/

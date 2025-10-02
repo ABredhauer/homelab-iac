@@ -18,7 +18,7 @@ mkdir -p /root/.ssh
 chmod 700 /root/.ssh
 
 # TODO: Replace 'yourusername' with your actual GitHub username
-GITHUB_USER="yourusername"
+GITHUB_USER="ABredhauer"
 curl -sSL "https://github.com/${GITHUB_USER}.keys" > /root/.ssh/authorized_keys
 chmod 600 /root/.ssh/authorized_keys
 
@@ -73,7 +73,7 @@ apt-get install -y curl wget git htop vim net-tools
 
 # 5. CLONE INFRASTRUCTURE REPOSITORY
 echo "Step 5: Setting up infrastructure automation..."
-REPO_URL="https://github.com/yourusername/homelab-iac.git"  # TODO: Update this
+REPO_URL="https://github.com/ABredhauer/homelab-iac.git"  # TODO: Update this
 REPO_DIR="/opt/homelab-iac"
 
 if [ -d "$REPO_DIR" ]; then

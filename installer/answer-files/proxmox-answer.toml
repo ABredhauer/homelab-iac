@@ -12,8 +12,8 @@ timezone = "Australia/Brisbane"          # Your correct timezone
 fqdn = "pve-temp.homelab.local"         # Temporary - post-install script changes this
 mailto = "admin@homelab.local"          # Email for system alerts
 
-# Temporary root password - gets locked by post-install script
-root_password = "TempInstall2024!"      # Changed to SSH-key only post-install
+# Root password - gets locked by post-install script
+root-password = "TempInstall2024!"      # Changed to SSH-key only post-install
 
 [network]
 # Network configuration for installation
@@ -25,53 +25,51 @@ source = "from-dhcp"                    # Let DHCP handle IP, DNS, gateway
 # Disk selection and partitioning configuration
 # This section is critical and hard to change after installation
 
-# Filesystem type for root partition
-# Options: ext4 (recommended), xfs, zfs (advanced), btrfs (experimental)
-filesystem = "ext4"                      # Most reliable for homelab
+# Filesystem type - you were correct to put this here!
+filesystem = "ext4"                      # Options: ext4, xfs, zfs, btrfs
 
 # Disk selection strategy
-disk_list = ["*"]                       # Select any available disk
+disk-list = ["*"]                       # Select any available disk
                                        # Alternatives:
                                        # ["/dev/sda"] - specific disk
                                        # ["/dev/nvme0n1"] - specific NVMe
                                        # ["*SAMSUNG*"] - match by model
-                                       
-filter_match = "any"                   # Use first disk found that matches
+
+filter-match = "any"                   # Use first disk found that matches
                                        # "any" = use any disk from disk_list
                                        # "all" = all disks must match (for RAID)
 
-[disk-setup.lvm]
-# LVM (Logical Volume Manager) configuration
-# Even with ext4, Proxmox uses LVM for flexibility
-# All sizes in GB
+# LVM configuration - you were right about the prefix!
+lvm.hdsize = 900                       # Total disk space to use (GB)
+                                       # Leave ~100GB unallocated for SSD health
 
-total_size = "900"                     # Total space to use from disk (GB)
-                                       # Leave ~100GB unallocated for:
-                                       # - Over-provisioning (SSDs)
-                                       # - Future expansion
-                                       # - Emergency recovery space
+lvm.swapsize = 8                       # Swap size (GB) - 8GB for 32GB RAM
 
-swap_size = "8"                        # Swap partition size (GB)
-                                       # Rule of thumb: 8GB for 32GB RAM
-                                       # Used for hibernation and memory overflow
-
-max_root_size = "100"                  # Maximum size for root filesystem (GB)
+lvm.maxroot = 100                      # Maximum root volume size (GB)
                                        # Contains: OS, applications, logs
-                                       # 100GB is generous for Proxmox host OS
 
-max_data_size = "792"                  # Maximum size for VM storage (GB)
+lvm.maxvz = 792                        # Maximum data volume size (GB)  
                                        # This is where VMs and containers live
                                        # 792GB = 900 - 100 (root) - 8 (swap)
 
-min_lvm_free = "16"                    # Minimum free space in volume group (GB)
+lvm.minfree = 16                       # Minimum free space in volume group (GB)
                                        # Reserve for snapshots and expansion
-                                       # Never allocate 100% of LVM space
 
 # Final layout on your 1TB SSD will be approximately:
 # - /dev/sda1: 1GB (EFI boot partition)
 # - /dev/sda2: 900GB (LVM Physical Volume)
-#   - swap: 8GB
-#   - root: 100GB (Proxmox OS)
-#   -  792GB (VM storage)
-#   - free: 16GB (reserved)
-# - Unallocated: ~99GB (SSD over-provisioning)
+#   - pve-swap: 8GB (swap logical volume)
+#   - pve-root: 100GB (root filesystem - OS)
+#   - pve- 792GB (VM/CT storage)
+#   - free: 16GB (reserved LVM space)
+# - Unallocated: ~99GB (SSD over-provisioning + wear leveling)
+
+[first-boot]
+# Execute bootstrap script on first boot after installation completes
+source = "from-url"
+url = "https://raw.githubusercontent.com/ABredhauer/homelab-iac/main/scripts/bootstrap/secure-first-boot.sh"
+
+# Optional: Add error handling
+# If the script fails, what should happen?
+# Options: "continue", "abort" 
+on-error = "continue"                  # Continue booting even if script fails

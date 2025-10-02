@@ -1,0 +1,76 @@
+# File: ansible/playbooks/bootstrap.yml
+---
+- name: Bootstrap Proxmox Node
+  hosts: localhost
+  become: yes
+  gather_facts: yes
+  
+  vars:
+    # Default values - can be overridden by command line
+    node_hostname: "{{ ansible_hostname | default('pve-unknown') }}"
+    node_id: "99"
+    cluster_name: "homelab"
+    
+  tasks:
+    - name: Display node information
+      debug:
+        msg: |
+          Bootstrapping Proxmox node
+          Hostname: {{ node_hostname }}
+          Node ID: {{ node_id }}
+          IP: {{ ansible_default_ipv4.address }}
+          
+    - name: Update all packages
+      apt:
+        update_cache: yes
+        upgrade: dist
+        
+    - name: Install essential packages
+      apt:
+        name:
+          - vim
+          - htop
+          - tree
+          - net-tools
+          - nut-client     # For UPS integration later
+          - rsync
+          - screen
+        state: present
+        
+    - name: Configure timezone
+      timezone:
+        name: Australia/Brisbane
+        
+    - name: Ensure SSH service is running
+      systemd:
+        name: ssh
+        enabled: yes
+        state: started
+        
+    - name: Ensure Proxmox services are running
+      systemd:
+        name: "{{ item }}"
+        enabled: yes
+        state: started
+      loop:
+        - pveproxy
+        - pvedaemon
+        - pvestatd
+        
+    # TODO: Add network bonding configuration
+    # TODO: Add NUT client setup  
+    # TODO: Add NFS storage configuration
+    # TODO: Add cluster join logic
+        
+    - name: Create completion marker
+      file:
+        path: "/opt/ansible-bootstrap-complete"
+        state: touch
+        mode: '0644'
+        
+    - name: Display completion message
+      debug:
+        msg: |
+          ✓ Bootstrap completed for {{ node_hostname }}
+          ✓ Ready for cluster configuration
+          ✓ Next: Configure network bonding and storage

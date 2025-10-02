@@ -60,7 +60,7 @@ lvm.minfree = 16                       # Minimum free space in volume group (GB)
 # - /dev/sda2: 900GB (LVM Physical Volume)
 #   - pve-swap: 8GB (swap logical volume)
 #   - pve-root: 100GB (root filesystem - OS)
-#   - pve- 792GB (VM/CT storage)
+#   - pve-data: 792GB (VM/CT storage)
 #   - free: 16GB (reserved LVM space)
 # - Unallocated: ~99GB (SSD over-provisioning + wear leveling)
 

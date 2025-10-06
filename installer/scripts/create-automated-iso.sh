@@ -1,6 +1,6 @@
 #!/bin/bash
-# File: scripts/create-automated-iso.sh
-# Simple script to create URL-based automated Proxmox ISO
+# File: installer/scripts/create-automated-iso.sh
+# Final fixed version: ensures correct ownership & permissions
 
 set -euo pipefail
 
@@ -8,83 +8,107 @@ ISO_FILE="proxmox-ve_9.0-1.iso"
 OUTPUT_ISO="proxmox-ve-automated.iso"
 ANSWER_URL="https://raw.githubusercontent.com/ABredhauer/homelab-iac/main/installer/answer-files/proxmox-answer.toml"
 
-echo "Creating automated Proxmox ISO..."
+echo "==============================================="
+echo "==> Starting Proxmox Automated ISO Creation"
+echo "==============================================="
 
-# Check if original ISO exists
+# Verify original ISO exists
 if [[ ! -f "$ISO_FILE" ]]; then
-    echo "Error: $ISO_FILE not found"
-    echo "Download it first: wget https://enterprise.proxmox.com/iso/proxmox-ve_9.0-1.iso"
-    exit 1
+  echo "Error: $ISO_FILE not found in $(pwd)"
+  exit 1
 fi
 
-# Create temp directory
-WORK_DIR=$(mktemp -d)
-MOUNT_POINT="$WORK_DIR/mount"
+# Setup temp directories under $TMPDIR
+WORK_DIR="$(mktemp -d)"
+MOUNT_DIR="$WORK_DIR/iso-mount"
+COPY_DIR="$WORK_DIR/Proxmox-AIS"
+mkdir -p "$MOUNT_DIR" "$COPY_DIR"
 
-cleanup() {
-    hdiutil detach "$MOUNT_POINT" 2>/dev/null || true
-    rm -rf "$WORK_DIR"
-}
-trap cleanup EXIT
+trap 'echo "Cleaning up..."; set +x; hdiutil detach "$MOUNT_DIR" 2>/dev/null || true; chmod -R u+w,u+rX "$WORK_DIR" 2>/dev/null || true; rm -rf "$WORK_DIR"; echo "Cleanup complete."' EXIT
 
-# Mount and copy
-echo "Mounting original ISO..."
-mkdir -p "$MOUNT_POINT"
-hdiutil attach "$ISO_FILE" -mountpoint "$MOUNT_POINT" -nobrowse
+# Mount original ISO
+echo "Mounting original ISO at $MOUNT_DIR..."
+hdiutil attach "$ISO_FILE" -mountpoint "$MOUNT_DIR" -nobrowse -readonly
 
-echo "Copying ISO contents..."
-cp -R "$MOUNT_POINT"/* "$WORK_DIR"/
+# Copy contents
+echo "Copying contents to $COPY_DIR..."
+cp -R "$MOUNT_DIR/." "$COPY_DIR/"
 
-# Modify GRUB config
-echo "Modifying boot configuration..."
-GRUB_CFG="$WORK_DIR/boot/grub/grub.cfg"
+# Detach original ISO
+echo "Detaching original ISO..."
+hdiutil detach "$MOUNT_DIR"
+
+# Fix ownership & permissions on copied files
+echo "Adjusting ownership and permissions in $COPY_DIR..."
+sudo chown -R "$(whoami)" "$COPY_DIR"
+chmod -R u+w,u+rX "$COPY_DIR"
+
+# Modify GRUB configuration
+
+GRUB_CFG="$COPY_DIR/boot/grub/grub.cfg"
+
+echo "Patching GRUB config at $GRUB_CFG..."
 
 if [[ -f "$GRUB_CFG" ]]; then
-    # Backup original
-    cp "$GRUB_CFG" "$GRUB_CFG.backup"
-    
-    # Add automated install entry
-    sed -i.bak '/menuentry.*Install Proxmox VE.*Graphical/ {
-        a\
-\
-menuentry "Install Proxmox VE (Automated)" {\
-    set gfxpayload=keep\
-    linux /boot/linux26 ro ramdisk_size=16777216 rw quiet splash=verbose proxdebug fetch-answer-url='"$ANSWER_URL"'\
-    initrd /boot/initrd.img\
+  # Backup
+  cp "$GRUB_CFG" "$GRUB_CFG.bak"
+
+  # 1) Append automated menu entry at end of file
+  cat >> "$GRUB_CFG" << EOF
+
+menuentry "Install Proxmox VE (Automated)" {
+    set gfxpayload=keep
+    linux /boot/linux26 ro ramdisk_size=16777216 rw quiet splash=verbose proxdebug fetch-answer-url=$ANSWER_URL
+    initrd /boot/initrd.img
 }
-    }' "$GRUB_CFG"
-    
-    # Set automated as default
-    sed -i.bak 's/set default=.*/set default="Install Proxmox VE (Automated)"/' "$GRUB_CFG"
-    sed -i.bak 's/set timeout=.*/set timeout=10/' "$GRUB_CFG"
-    
-    echo "✓ Boot configuration modified"
+EOF
+
+  # 2) Update default and timeout
+  sed -i.bak 's|^set default=.*|set default="Install Proxmox VE (Automated)"|' "$GRUB_CFG"
+  sed -i.bak 's|^set timeout=.*|set timeout=10|' "$GRUB_CFG"
+
+  echo "GRUB config patched."
 else
-    echo "Warning: GRUB config not found at expected location"
+  echo "Warning: $GRUB_CFG not found; skipping patch."
 fi
 
-# Create new ISO
-echo "Creating new ISO..."
-cd "$WORK_DIR"
-hdiutil makehybrid -o "$OLDPWD/$OUTPUT_ISO" . \
-    -joliet \
-    -iso \
-    -default-volume-name "Proxmox VE Automated"
+# Build new ISO
+echo "Building new ISO $OUTPUT_ISO..."
+pushd "$COPY_DIR"
 
-cd "$OLDPWD"
-echo "✓ Created: $OUTPUT_ISO ($(ls -lh $OUTPUT_ISO | awk '{print $5}'))"
+mkisofs -v -o "$OLDPWD/$OUTPUT_ISO" \
+    -V "Proxmox VE Automated" \
+    -J -iso-level 3 -joliet-long \
+    -r \
+    -b boot/grub/i386-pc/eltorito.img \
+    -no-emul-boot \
+    -boot-load-size 4 \
+    -boot-info-table \
+    -eltorito-alt-boot \
+    -eltorito-platform efi \
+    -b boot/grub/x86_64-efi/efiboot.img \
+    -no-emul-boot \
+    .
 
-# Test the answer file URL
+popd
+
+# Verify ISO creation
+if [[ -f "$OUTPUT_ISO" ]]; then
+  echo "✓ Created $OUTPUT_ISO ($(ls -lh $OUTPUT_ISO | awk '{print $5}'))"
+  file "$OUTPUT_ISO"
+else
+  echo "✗ Failed to create $OUTPUT_ISO"
+  exit 1
+fi
+
+# Test answer file URL
 echo "Testing answer file URL..."
-if curl -f -s "$ANSWER_URL" >/dev/null; then
-    echo "✓ Answer file accessible at GitHub"
+if curl -sf "$ANSWER_URL" >/dev/null; then
+  echo "✓ Answer file reachable"
 else
-    echo "⚠️  Answer file not accessible - check GitHub repo"
+  echo "⚠️ Answer file not reachable"
 fi
 
-echo ""
-echo "Ready to boot! The ISO will:"
-echo "1. Boot automatically in 10 seconds"
-echo "2. Fetch answer file from GitHub"
-echo "3. Install Proxmox unattended"
-echo "4. Run first-boot script on startup"
+echo "==============================================="
+echo "==> ISO Creation Complete"
+echo "==============================================="

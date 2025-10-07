@@ -36,25 +36,29 @@ echo "Step 1: Configuring SSH key authentication..."
 mkdir -p /root/.ssh
 chmod 700 /root/.ssh
 
-echo "Fetching SSH keys for GitHub user: $GITHUB_USER"
-if curl -fsSL --connect-timeout 10 --max-time 30 "https://github.com/${GITHUB_USER}.keys" > /root/.ssh/authorized_keys; then
-    chmod 600 /root/.ssh/authorized_keys
-    if [[ -s /root/.ssh/authorized_keys ]]; then
-        keys_count=$(wc -l < /root/.ssh/authorized_keys)
-        echo "✓ Found $keys_count SSH key(s)"
+# Configure SSH keys for Proxmox VE
+echo "Setting up SSH keys for Proxmox VE..."
+mkdir -p /etc/pve/priv
+
+# Download keys to Proxmox's managed location
+if curl -fsSL --connect-timeout 10 --max-time 30 "https://github.com/${GITHUB_USER}.keys" > /etc/pve/priv/authorized_keys; then
+    chmod 600 /etc/pve/priv/authorized_keys
+    chown root:root /etc/pve/priv/authorized_keys
+    
+    if [[ -s /etc/pve/priv/authorized_keys ]]; then
+        keys_count=$(wc -l < /etc/pve/priv/authorized_keys)
+        echo "✓ Found $keys_count SSH key(s) in Proxmox location"
         DISABLE_PASSWORD_AUTH=true
     else
         echo "⚠️ Warning: No SSH keys found"
         KEEP_PASSWORD_AUTH=true
     fi
 else
-    echo "⚠️ Failed to fetch GitHub keys - keeping password auth enabled"
+    echo "⚠️ Failed to fetch GitHub keys"
     KEEP_PASSWORD_AUTH=true
 fi
 
-# Configure SSH daemon security options
-echo "Configuring SSH daemon security..."
-cp /etc/ssh/sshd_config "/etc/ssh/sshd_config.backup.$(date +%Y%m%d-%H%M%S)"
+# Proxmox will create the symlink automatically, so we don't need to manage /root/.ssh/authorized_keys
 
 if [[ "${KEEP_PASSWORD_AUTH:-false}" != "true" ]]; then
     sed -i 's/#PasswordAuthentication yes/PasswordAuthentication no/' /etc/ssh/sshd_config

@@ -7,10 +7,10 @@ REPO_URL="https://github.com/ABredhauer/homelab-iac.git"
 REPO_DIR="/opt/homelab-iac"
 
 # Static node info (update with actual MACs and IPs)
-NODE_MAC_1="aa:bb:cc:dd:ee:01"
+NODE_MAC_1="6c:3c:8c:43:10:e9"
 NODE_NAME_1="pve-node1"
 NODE_ID_1="1"
-NODE_IP_1="192.168.1.11"
+NODE_IP_1="192.168.1.100"
 
 NODE_MAC_2="aa:bb:cc:dd:ee:02"
 NODE_NAME_2="pve-node2"

@@ -59,7 +59,7 @@ cp /etc/ssh/sshd_config "/etc/ssh/sshd_config.backup.$(date +%Y%m%d-%H%M%S)"
 if [[ "${KEEP_PASSWORD_AUTH:-false}" != "true" ]]; then
     sed -i 's/#PasswordAuthentication yes/PasswordAuthentication no/' /etc/ssh/sshd_config
     sed -i 's/PasswordAuthentication yes/PasswordAuthentication no/' /etc/ssh/sshd_config
-    passwd -l root
+    # passwd -l root
 else
     echo "Password authentication remains enabled for emergency access"
 fi

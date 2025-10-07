@@ -43,7 +43,7 @@ mkdir -p /etc/pve/priv
 # Download keys to Proxmox's managed location
 if curl -fsSL --connect-timeout 10 --max-time 30 "https://github.com/${GITHUB_USER}.keys" > /etc/pve/priv/authorized_keys; then
     chmod 600 /etc/pve/priv/authorized_keys
-    chown root:root /etc/pve/priv/authorized_keys
+#    chown root /etc/pve/priv/authorized_keys
     
     if [[ -s /etc/pve/priv/authorized_keys ]]; then
         keys_count=$(wc -l < /etc/pve/priv/authorized_keys)

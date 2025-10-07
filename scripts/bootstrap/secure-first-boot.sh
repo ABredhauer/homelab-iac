@@ -216,8 +216,13 @@ fi
 
 # Step 8: Install Ansible
 echo "Step 8: Installing Ansible..."
-pip3 install --upgrade pip
-pip3 install ansible
+if apt-get install -y ansible; then
+    echo "✓ Ansible installed via apt"
+    ANSIBLE_AVAILABLE=true
+else
+    echo "⚠️  Ansible installation failed"
+    ANSIBLE_AVAILABLE=false
+fi
 
 # Step 9: Run Ansible bootstrap playbook if available
 echo "Step 9: Running Ansible bootstrap..."

@@ -126,18 +126,53 @@ EOF
 
 echo "✓ Hostname set to: $NODE_NAME.homelab.local"
 
-# Step 4: System update & package installation
+# Step 4: Configure repositories and system packages
 echo "Step 4: Configuring repositories and system packages..."
 
-# Disable enterprise repo and enable no-subscription repo
-echo "Configuring Proxmox package repositories..."
-if [ -f /etc/apt/sources.list.d/pve-enterprise.list ]; then
-  mv /etc/apt/sources.list.d/pve-enterprise.list /etc/apt/sources.list.d/pve-enterprise.list.disabled
-  echo "Enterprise repo disabled"
-fi
-echo "deb http://download.proxmox.com/debian/pve bookworm pve-no-subscription" > /etc/apt/sources.list.d/pve-no-subscription.list
-echo "No-subscription repo enabled"
+# Disable all enterprise repositories (both .list and .sources formats)
+echo "Disabling enterprise repositories..."
+for file in /etc/apt/sources.list.d/*.sources; do
+    if [[ -f "$file" ]] && grep -q "enterprise.proxmox.com" "$file"; then
+        # Comment out entire deb822 blocks properly
+        sed -i 's/^Types:/# Types:/' "$file"
+        sed -i 's/^URIs:/# URIs:/' "$file" 
+        sed -i 's/^Suites:/# Suites:/' "$file"
+        sed -i 's/^Components:/# Components:/' "$file"
+        sed -i 's/^Signed-By:/# Signed-By:/' "$file"
+        echo "Disabled enterprise repo: $(basename "$file")"
+    fi
+done
 
+for file in /etc/apt/sources.list.d/*.list; do
+    if [[ -f "$file" ]] && grep -q "enterprise.proxmox.com" "$file"; then
+        mv "$file" "$file.disabled"
+        echo "Disabled enterprise repo: $(basename "$file")"
+    fi
+done
+
+# Create correct Proxmox VE no-subscription repository (trixie)
+echo "Setting up Proxmox VE no-subscription repository..."
+cat > /etc/apt/sources.list.d/proxmox.sources << 'EOF'
+Types: deb
+URIs: http://download.proxmox.com/debian/pve
+Suites: trixie
+Components: pve-no-subscription
+Signed-By: /usr/share/keyrings/proxmox-archive-keyring.gpg
+EOF
+
+# Create Ceph no-subscription repository 
+echo "Setting up Ceph no-subscription repository..."
+cat > /etc/apt/sources.list.d/ceph.sources << 'EOF'
+Types: deb
+URIs: http://download.proxmox.com/debian/ceph-squid
+Suites: trixie
+Components: no-subscription
+Signed-By: /usr/share/keyrings/proxmox-archive-keyring.gpg
+EOF
+
+echo "Repository configuration completed"
+
+# Update package lists with new repository configuration
 apt-get update
 
 ESSENTIAL_PKGS=(

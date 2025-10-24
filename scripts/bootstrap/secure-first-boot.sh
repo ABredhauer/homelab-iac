@@ -10,12 +10,12 @@ REPO_DIR="/opt/homelab-iac"
 NODE_MAC_1="6c:3c:8c:43:10:e9"
 NODE_NAME_1="pve-node1"
 NODE_ID_1="1"
-NODE_IP_1="192.168.1.100"
+NODE_IP_1="192.168.1.230"
 
 NODE_MAC_2="6c:3c:8c:2f:43:6a"
 NODE_NAME_2="pve-node2"
 NODE_ID_2="2"
-NODE_IP_2="192.168.1.122"
+NODE_IP_2="192.168.1.232"
 
 DEFAULT_NODE_NAME="pve-unknown"
 DEFAULT_NODE_ID="99"
@@ -124,8 +124,8 @@ echo "127.0.1.1 $NODE_NAME.homelab.local $NODE_NAME" >> /etc/hosts
 
 cat >> /etc/hosts <<EOF
 # Proxmox cluster nodes (uncomment as cluster forms)
-# $NODE_IP_1 $NODE_NAME_1.homelab.local $NODE_NAME_1
-# $NODE_IP_2 $NODE_NAME_2.homelab.local $NODE_NAME_2
+$NODE_IP_1 $NODE_NAME_1.homelab.local $NODE_NAME_1
+$NODE_IP_2 $NODE_NAME_2.homelab.local $NODE_NAME_2
 EOF
 
 echo "✓ Hostname set to: $NODE_NAME.homelab.local"

@@ -5,16 +5,23 @@
 # Logs and temporary files
 *.log
 *.tmp
+
+# Synology metadata
+@eaDir/
 .DS_Store
+*.@SynoResource
+*.@SynoEAStream
 
 # Secrets (never commit these)
 secrets/
 *.key
 *.pem
 id_rsa*
+id_ed25519*
 
 # Ansible
 *.retry
+ansible/*.log
 .vault_pass
 
 # Vagrant

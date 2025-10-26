@@ -1,0 +1,11 @@
+---
+- name: Test Connectivity
+  hosts: localhost
+  gather_facts: true
+  tasks:
+    - name: Display system info
+      debug:
+        msg: |
+          Hostname: {{ ansible_hostname }}
+          OS: {{ ansible_distribution }} {{ ansible_distribution_version }}
+          Python: {{ ansible_python_version }}

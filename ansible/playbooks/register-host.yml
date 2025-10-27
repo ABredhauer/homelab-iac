@@ -6,19 +6,32 @@
   gather_facts: false
   
   vars:
-    # Rename these to avoid conflicts - use _input suffix
-    hostname_input: "{{ new_hostname | mandatory }}"
-    host_ip_input: "{{ new_host_ip | mandatory }}"
-    host_group_input: "{{ new_host_group | default('uncategorized') }}"
-    host_user_input: "{{ new_host_user | default('root') }}"
-    
-    # These come from the Variable Group
+    # These come from the Variable Group in Semaphore
     semaphore_url: "{{ lookup('env', 'SEMAPHORE_WEB_ROOT') }}"
     semaphore_project_id: "{{ lookup('env', 'SEMAPHORE_PROJECT_ID') }}"
     semaphore_inventory_id: "{{ lookup('env', 'SEMAPHORE_INVENTORY_ID') }}"
     semaphore_api_token: "{{ lookup('env', 'SEMAPHORE_API_TOKEN') }}"
   
   tasks:
+    - name: Debug - show all variables
+      debug:
+        var: hostvars[inventory_hostname]
+    
+    - name: Check if extra_vars were passed
+      debug:
+        msg: |
+          Looking for:
+          - new_hostname (value: {{ new_hostname | default('NOT DEFINED') }})
+          - new_host_ip (value: {{ new_host_ip | default('NOT DEFINED') }})
+          - new_host_group (value: {{ new_host_group | default('NOT DEFINED') }})
+    
+    - name: Set facts from extra_vars with defaults
+      set_fact:
+        hostname_input: "{{ new_hostname | default('unknown-host') }}"
+        host_ip_input: "{{ new_host_ip | default('0.0.0.0') }}"
+        host_group_input: "{{ new_host_group | default('uncategorized') }}"
+        host_user_input: "{{ new_host_user | default('root') }}"
+    
     - name: Display registration information
       debug:
         msg: |
@@ -27,89 +40,3 @@
           - IP Address: {{ host_ip_input }}
           - Group: {{ host_group_input }}
           - User: {{ host_user_input }}
-    
-    - name: Fetch current inventory from Semaphore
-      uri:
-        url: "{{ semaphore_url }}/api/project/{{ semaphore_project_id }}/inventory/{{ semaphore_inventory_id }}"
-        method: GET
-        headers:
-          Authorization: "Bearer {{ semaphore_api_token }}"
-        return_content: yes
-      register: current_inventory
-    
-    - name: Parse current inventory YAML
-      set_fact:
-        inventory_data: "{{ current_inventory.json.inventory | from_yaml }}"
-    
-    - name: Create new host entry
-      set_fact:
-        new_host_data:
-          "{{ hostname_input }}":
-            ansible_host: "{{ host_ip_input }}"
-            ansible_user: "{{ host_user_input }}"
-            ansible_python_interpreter: /usr/bin/python3
-            registered_at: "{{ ansible_date_time.iso8601 }}"
-            registered_by: first-boot-automation
-    
-    - name: Ensure group exists in inventory
-      set_fact:
-        inventory_with_group: >-
-          {{
-            inventory_data | combine({
-              'all': {
-                'children': (inventory_data.all.children | default({})) | combine({
-                  host_group_input: {
-                    'hosts': {},
-                    'vars': {
-                      'ansible_ssh_common_args': '-o StrictHostKeyChecking=no'
-                    }
-                  }
-                })
-              }
-            }, recursive=True)
-          }}
-      when: host_group_input not in (inventory_data.all.children | default({}) | list)
-    
-    - name: Use existing inventory if group already exists
-      set_fact:
-        inventory_with_group: "{{ inventory_data }}"
-      when: host_group_input in (inventory_data.all.children | default({}) | list)
-    
-    - name: Add host to group
-      set_fact:
-        updated_inventory: >-
-          {{
-            inventory_with_group | combine({
-              'all': {
-                'children': inventory_with_group.all.children | combine({
-                  host_group_input: {
-                    'hosts': (inventory_with_group.all.children[host_group_input].hosts | default({})) | combine(new_host_data)
-                  }
-                })
-              }
-            }, recursive=True)
-          }}
-    
-    - name: Update Semaphore inventory with new host
-      uri:
-        url: "{{ semaphore_url }}/api/project/{{ semaphore_project_id }}/inventory/{{ semaphore_inventory_id }}"
-        method: PUT
-        headers:
-          Authorization: "Bearer {{ semaphore_api_token }}"
-          Content-Type: "application/json"
-        body_format: json
-        body:
-          name: "{{ current_inventory.json.name }}"
-          inventory: "{{ updated_inventory | to_nice_yaml }}"
-          ssh_key_id: "{{ current_inventory.json.ssh_key_id }}"
-          type: "static-yaml"
-        status_code: 204
-      register: update_result
-    
-    - name: Confirm registration
-      debug:
-        msg: |
-          ✓ Host {{ hostname_input }} successfully registered
-          ✓ Added to group: {{ host_group_input }}
-          ✓ IP Address: {{ host_ip_input }}
-          ✓ Inventory updated in Semaphore

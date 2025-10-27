@@ -1,0 +1,92 @@
+---
+# ansible/playbooks/register-host.yml
+# Generic host registration - adds host to Semaphore inventory permanently
+# Can be called from first-boot scripts, VM provisioning, etc.
+
+- name: Register New Host in Semaphore Inventory
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  
+  vars:
+    # These will be passed as extra_vars from the API call
+    new_hostname: "{{ new_hostname | mandatory }}"
+    new_host_ip: "{{ new_host_ip | mandatory }}"
+    new_host_group: "{{ new_host_group | default('uncategorized') }}"
+    new_host_user: "{{ new_host_user | default('root') }}"
+    
+    # Semaphore API details
+    semaphore_url: "{{ lookup('env', 'SEMAPHORE_WEB_ROOT') | default('http://localhost:3000', true) }}"
+    semaphore_project_id: "{{ lookup('env', 'SEMAPHORE_PROJECT_ID') | mandatory }}"
+    semaphore_inventory_id: "{{ lookup('env', 'SEMAPHORE_INVENTORY_ID') | mandatory }}"
+    semaphore_api_token: "{{ lookup('env', 'SEMAPHORE_API_TOKEN') | mandatory }}"
+  
+  tasks:
+    - name: Display registration information
+      debug:
+        msg: |
+          Registering new host:
+          - Hostname: {{ new_hostname }}
+          - IP Address: {{ new_host_ip }}
+          - Group: {{ new_host_group }}
+          - User: {{ new_host_user }}
+    
+    - name: Fetch current inventory from Semaphore
+      uri:
+        url: "{{ semaphore_url }}/api/project/{{ semaphore_project_id }}/inventory/{{ semaphore_inventory_id }}"
+        method: GET
+        headers:
+          Authorization: "Bearer {{ semaphore_api_token }}"
+        return_content: yes
+      register: current_inventory
+    
+    - name: Parse current inventory YAML
+      set_fact:
+        inventory_ "{{ current_inventory.json.inventory | from_yaml }}"
+    
+    - name: Add new host to inventory structure
+      set_fact:
+        updated_inventory: >-
+          {{
+            inventory_data | combine({
+              'all': {
+                'children': inventory_data.all.children | default({}) | combine({
+                  new_host_group: {
+                    'hosts': (inventory_data.all.children[new_host_group].hosts | default({})) | combine({
+                      new_hostname: {
+                        'ansible_host': new_host_ip,
+                        'ansible_user': new_host_user,
+                        'ansible_python_interpreter': '/usr/bin/python3',
+                        'registered_at': ansible_date_time.iso8601,
+                        'registered_by': 'first-boot-automation'
+                      }
+                    })
+                  }
+                })
+              }
+            }, recursive=True)
+          }}
+    
+    - name: Update Semaphore inventory with new host
+      uri:
+        url: "{{ semaphore_url }}/api/project/{{ semaphore_project_id }}/inventory/{{ semaphore_inventory_id }}"
+        method: PUT
+        headers:
+          Authorization: "Bearer {{ semaphore_api_token }}"
+          Content-Type: "application/json"
+        body_format: json
+        body:
+          name: "{{ current_inventory.json.name }}"
+          inventory: "{{ updated_inventory | to_nice_yaml }}"
+          ssh_key_id: "{{ current_inventory.json.ssh_key_id }}"
+          type: "static-yaml"
+        status_code: 204
+      register: update_result
+    
+    - name: Confirm registration
+      debug:
+        msg: |
+          ✓ Host {{ new_hostname }} successfully registered
+          ✓ Added to group: {{ new_host_group }}
+          ✓ Inventory updated in Semaphore
+          ✓ Ready for bootstrap

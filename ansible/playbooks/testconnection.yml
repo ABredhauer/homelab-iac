@@ -1,0 +1,14 @@
+---
+- name: Test Semaphore Connection
+  hosts: localhost
+  connection: local
+  gather_facts: true
+  
+  tasks:
+    - name: Show Semaphore is working
+      debug:
+        msg: |
+          ✓ Semaphore is running Ansible successfully
+          Hostname: {{ ansible_hostname }}
+          OS: {{ ansible_distribution }} {{ ansible_distribution_version }}
+          Ansible Version: {{ ansible_version.full }}

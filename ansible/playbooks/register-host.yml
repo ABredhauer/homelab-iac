@@ -15,10 +15,10 @@
     host_user_input: "{{ new_host_user }}"
     
     # These come from the Variable Group
-    semaphore_url: "{{ lookup('env', 'SEMAPHORE_WEB_ROOT') }}"
-    semaphore_project_id: "{{ lookup('env', 'SEMAPHORE_PROJECT_ID') }}"
-    semaphore_inventory_id: "{{ lookup('env', 'SEMAPHORE_INVENTORY_ID') }}"
-    semaphore_api_token: "{{ lookup('env', 'SEMAPHORE_API_TOKEN') }}"
+    semaphore_url: "{{ SEMAPHORE_WEB_ROOT }}"
+    semaphore_project_id: "{{ SEMAPHORE_PROJECT_ID }}"
+    semaphore_inventory_id: "{{ SEMAPHORE_INVENTORY_ID }}"
+    semaphore_api_token: "{{ SEMAPHORE_API_TOKEN }}"
   
   tasks:
     - name: Display registration information

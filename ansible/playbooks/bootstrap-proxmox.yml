@@ -1,0 +1,271 @@
+---
+# ansible/playbooks/bootstrap-proxmox.yml
+# Complete Proxmox bootstrap - handles everything after first-boot
+
+- name: Bootstrap Proxmox Host
+  hosts: "{{ target_host }}"
+  become: true
+  gather_facts: true
+  
+  vars:
+    # Node identification mappings
+    node_mappings:
+      "6c:3c:8c:43:10:e9":
+        hostname: pve-node1
+        node_id: 1
+        ip: 192.168.1.230
+      "6c:3c:8c:2f:43:6a":
+        hostname: pve-node2
+        node_id: 2
+        ip: 192.168.1.232
+    
+    # Get MAC from extra vars or detect it
+    primary_mac: "{{ primary_mac | default(ansible_default_ipv4.macaddress) }}"
+    
+    # Node configuration
+    github_user: "ABredhauer"
+    repo_url: "https://github.com/ABredhauer/homelab-iac.git"
+    repo_dir: "/opt/homelab-iac"
+    cluster_name: "homelab"
+  
+  tasks:
+    # ===== Node Identification =====
+    - name: Identify node by MAC address
+      set_fact:
+        node_config: "{{ node_mappings[primary_mac] | default({'hostname': 'pve-unknown-' + ansible_date_time.epoch, 'node_id': 99, 'ip': ansible_default_ipv4.address}) }}"
+    
+    - name: Display node identification
+      debug:
+        msg: |
+          Node Identified:
+          - MAC: {{ primary_mac }}
+          - Hostname: {{ node_config.hostname }}
+          - Node ID: {{ node_config.node_id }}
+          - IP: {{ node_config.ip }}
+    
+    # ===== System Identity Configuration =====
+    - name: Set hostname
+      hostname:
+        name: "{{ node_config.hostname }}"
+    
+    - name: Backup existing /etc/hosts
+      copy:
+        src: /etc/hosts
+        dest: "/etc/hosts.backup.{{ ansible_date_time.epoch }}"
+        remote_src: yes
+    
+    - name: Remove temp hostname entries
+      lineinfile:
+        path: /etc/hosts
+        regexp: ".*pve-temp.*"
+        state: absent
+    
+    - name: Configure /etc/hosts - localhost entry
+      lineinfile:
+        path: /etc/hosts
+        line: "127.0.1.1 {{ node_config.hostname }}.homelab.local {{ node_config.hostname }}"
+        regexp: "^127\\.0\\.1\\.1"
+        state: present
+    
+    - name: Configure /etc/hosts - cluster nodes
+      blockinfile:
+        path: /etc/hosts
+        marker: "# {mark} ANSIBLE MANAGED - Proxmox Cluster Nodes"
+        block: |
+          # Proxmox cluster nodes
+          192.168.1.230 pve-node1.homelab.local pve-node1
+          192.168.1.232 pve-node2.homelab.local pve-node2
+    
+    # ===== Repository Configuration =====
+    - name: Disable enterprise repositories (deb822 format)
+      replace:
+        path: "{{ item }}"
+        regexp: '^(Types:|URIs:|Suites:|Components:|Signed-By:)'
+        replace: '# \1'
+      with_fileglob:
+        - /etc/apt/sources.list.d/*.sources
+      when: "'enterprise.proxmox.com' in lookup('file', item)"
+      ignore_errors: yes
+    
+    - name: Disable enterprise repositories (legacy format)
+      shell: |
+        for file in /etc/apt/sources.list.d/*.list; do
+          if grep -q "enterprise.proxmox.com" "$file" 2>/dev/null; then
+            mv "$file" "$file.disabled"
+          fi
+        done
+      args:
+        executable: /bin/bash
+    
+    - name: Configure Proxmox VE no-subscription repository
+      copy:
+        dest: /etc/apt/sources.list.d/proxmox.sources
+        content: |
+          Types: deb
+          URIs: http://download.proxmox.com/debian/pve
+          Suites: trixie
+          Components: pve-no-subscription
+          Signed-By: /usr/share/keyrings/proxmox-archive-keyring.gpg
+        owner: root
+        group: root
+        mode: '0644'
+    
+    - name: Configure Ceph no-subscription repository
+      copy:
+        dest: /etc/apt/sources.list.d/ceph.sources
+        content: |
+          Types: deb
+          URIs: http://download.proxmox.com/debian/ceph-squid
+          Suites: trixie
+          Components: no-subscription
+          Signed-By: /usr/share/keyrings/proxmox-archive-keyring.gpg
+        owner: root
+        group: root
+        mode: '0644'
+    
+    # ===== Package Management =====
+    - name: Update apt cache
+      apt:
+        update_cache: yes
+        cache_valid_time: 3600
+    
+    - name: Install essential packages
+      apt:
+        name:
+          - curl
+          - wget
+          - git
+          - htop
+          - vim
+          - net-tools
+          - tree
+          - rsync
+          - screen
+          - tmux
+          - python3-pip
+          - fail2ban
+          - ufw
+          - nut-client
+          - fwupd
+          - isc-dhcp-client
+          - libnss-myhostname
+        state: present
+    
+    - name: Perform full system upgrade
+      apt:
+        upgrade: dist
+        autoremove: yes
+        autoclean: yes
+    
+    # ===== Proxmox Configuration =====
+    - name: Remove subscription nag from Web UI
+      replace:
+        path: /usr/share/javascript/proxmox-widget-toolkit/proxmoxlib.js
+        regexp: '(data\.status !== .active.)'
+        replace: 'false'
+      ignore_errors: yes
+    
+    - name: Enable Proxmox HA services
+      systemd:
+        name: "{{ item }}"
+        enabled: yes
+        state: started
+      loop:
+        - pve-ha-lrm
+        - pve-ha-crm
+        - corosync
+        - pveproxy
+        - pvedaemon
+        - pvestatd
+      ignore_errors: yes
+    
+    # ===== Infrastructure Repository =====
+    - name: Clone or update infrastructure repository
+      git:
+        repo: "{{ repo_url }}"
+        dest: "{{ repo_dir }}"
+        version: main
+        force: yes
+      ignore_errors: yes
+    
+    # ===== System Configuration =====
+    - name: Configure timezone
+      timezone:
+        name: Australia/Brisbane
+    
+    - name: Configure NTP servers
+      copy:
+        dest: /etc/systemd/timesyncd.conf
+        content: |
+          [Time]
+          NTP=0.au.pool.ntp.org 1.au.pool.ntp.org 2.au.pool.ntp.org 3.au.pool.ntp.org
+          FallbackNTP=ntp.ubuntu.com
+        owner: root
+        group: root
+        mode: '0644'
+      notify: restart timesyncd
+    
+    # ===== Completion Markers =====
+    - name: Create bootstrap completion marker
+      copy:
+        dest: /opt/ansible-bootstrap-complete
+        content: |
+          Ansible Bootstrap Complete
+          ==========================
+          Node: {{ node_config.hostname }}
+          Node ID: {{ node_config.node_id }}
+          MAC: {{ primary_mac }}
+          IP: {{ ansible_default_ipv4.address }}
+          Completed: {{ ansible_date_time.iso8601 }}
+          By: Ansible Semaphore
+        owner: root
+        group: root
+        mode: '0644'
+    
+    - name: Create node identity file
+      copy:
+        dest: /opt/homelab-node-identity
+        content: "{{ node_config.hostname }}"
+        owner: root
+        group: root
+        mode: '0644'
+    
+    - name: Create detailed bootstrap log
+      copy:
+        dest: /opt/homelab-bootstrap-complete
+        content: |
+          Bootstrap completed: {{ ansible_date_time.iso8601 }}
+          Node name: {{ node_config.hostname }}
+          Node ID: {{ node_config.node_id }}
+          MAC address: {{ primary_mac }}
+          IP address: {{ ansible_default_ipv4.address }}
+          OS: {{ ansible_distribution }} {{ ansible_distribution_version }}
+          Kernel: {{ ansible_kernel }}
+          Repository: {{ repo_url }}
+          Managed by: Ansible Semaphore
+        owner: root
+        group: root
+        mode: '0644'
+    
+    - name: Display completion summary
+      debug:
+        msg: |
+          ✓ Bootstrap complete for {{ node_config.hostname }}
+          ✓ System packages upgraded
+          ✓ Proxmox repositories configured
+          ✓ HA services enabled
+          ✓ Hostname and network configured
+          ✓ Ready for cluster operations
+          
+          Next steps:
+          - Review configuration in Proxmox UI
+          - Configure network bonding (manual or future playbook)
+          - Join to cluster (manual or future playbook)
+          - Configure shared storage
+  
+  handlers:
+    - name: restart timesyncd
+      systemd:
+        name: systemd-timesyncd
+        state: restarted
+        enabled: yes

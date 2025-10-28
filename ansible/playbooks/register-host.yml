@@ -105,11 +105,11 @@
           Authorization: "Bearer {{ semaphore_api_token }}"
           Content-Type: "application/json"
         body_format: json
-        body:
+        body: '{
           name: "{{ inventory_metadata.name }}"
           inventory: "{{ updated_inventory | to_nice_yaml }}"
           ssh_key_id: "{{ inventory_metadata.ssh_key_id }}"
-          type: "static-yaml"
+          type: "static-yaml" }'
         status_code: 204
       register: update_result
     

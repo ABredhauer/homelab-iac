@@ -5,7 +5,7 @@
 - name: Register New Host in Semaphore Inventory
   hosts: localhost
   connection: local
-  gather_facts: false
+  gather_facts: true
   
   vars:
     # These come from the environment parameter in the API call

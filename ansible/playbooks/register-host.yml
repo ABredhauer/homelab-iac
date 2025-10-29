@@ -119,20 +119,14 @@
           Authorization: "Bearer {{ semaphore_api_token }}"
           Content-Type: "application/json"
         body_format: json
-        body: 
-          id: "{{ semaphore_inventory_id | int}}"
-          name: "{{ inventory_metadata.name }}"
-          project_id: "{{ semaphore_project_id | int}}"
-          inventory: "{{ updated_inventory | to_nice_yaml }}"
-          ssh_key_id: "{{ inventory_metadata.ssh_key_id | int }}"
-          become_key_id: "{{ inventory_metadata.become_key_id | int  }}"
-          repository_id: "{{ inventory_metadata.repository_id | int }}"
-          type: "static-yaml"
+        body: "{{ inventory_metadata | combine({'inventory': updated_inventory | to_nice_yaml}) }}"
         status_code: 204
         return_content: yes
       register: update_result
 
-      
+    - name: Print URL output
+      debug:
+        var: update_result
 
     - name: Confirm successful registration
       debug:

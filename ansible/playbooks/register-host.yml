@@ -97,6 +97,16 @@
             }, recursive=True)
           }}
     
+    - name: Debug: Show body sent to Semaphore API
+      debug:
+        msg: |
+          Body to Semaphore:
+          name: "{{ inventory_metadata.name }}"
+          inventory: "{{ updated_inventory | to_nice_yaml }}"
+          ssh_key_id: "{{ inventory_metadata.ssh_key_id }}"
+          type: "static-yaml"
+
+
     - name: Update inventory in Semaphore
       uri:
         url: "{{ semaphore_url }}/api/project/{{ semaphore_project_id }}/inventory/{{ semaphore_inventory_id }}"
@@ -111,8 +121,10 @@
           ssh_key_id: "{{ inventory_metadata.ssh_key_id }}"
           type: "static-yaml" }'
         status_code: 204
+        return_content: yes
       register: update_result
-    
+      
+
     - name: Confirm successful registration
       debug:
         msg: |

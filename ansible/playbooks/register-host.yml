@@ -101,9 +101,13 @@
       debug:
         msg: |
           Body to Semaphore:
+          id: "{{ semaphore_inventory_id | int}}"
           name: "{{ inventory_metadata.name }}"
+          project_id: "{{ semaphore_project_id | int}}"
           inventory: "{{ updated_inventory | to_nice_yaml }}"
-          ssh_key_id: "{{ inventory_metadata.ssh_key_id }}"
+          ssh_key_id: "{{ inventory_metadata.ssh_key_id | int }}"
+          become_key_id: "{{ inventory_metadata.become_key_id | int  }}"
+          repository_id: "{{ inventory_metadata.repository_id | int }}"
           type: "static-yaml"
 
 
@@ -115,11 +119,15 @@
           Authorization: "Bearer {{ semaphore_api_token }}"
           Content-Type: "application/json"
         body_format: json
-        body: '{
+        body: 
+          id: "{{ semaphore_inventory_id | int}}"
           name: "{{ inventory_metadata.name }}"
+          project_id: "{{ semaphore_project_id | int}}"
           inventory: "{{ updated_inventory | to_nice_yaml }}"
-          ssh_key_id: "{{ inventory_metadata.ssh_key_id }}"
-          type: "static-yaml" }'
+          ssh_key_id: "{{ inventory_metadata.ssh_key_id | int }}"
+          become_key_id: "{{ inventory_metadata.become_key_id | int  }}"
+          repository_id: "{{ inventory_metadata.repository_id | int }}"
+          type: "static-yaml"
         status_code: 204
         return_content: yes
       register: update_result

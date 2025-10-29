@@ -97,7 +97,7 @@
             }, recursive=True)
           }}
     
-    - name: Debug: Show body sent to Semaphore API
+    - name: Show body sent to Semaphore API
       debug:
         msg: |
           Body to Semaphore:
@@ -123,6 +123,7 @@
         status_code: 204
         return_content: yes
       register: update_result
+
       
 
     - name: Confirm successful registration

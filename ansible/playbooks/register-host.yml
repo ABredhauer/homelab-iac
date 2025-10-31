@@ -181,9 +181,7 @@
         status_code: 204
         return_content: yes
       register: update_result
-      debug:
-        var: update_result
-    
+      
     - name: Trigger bootstrap playbook
       uri:
         url: "{{ semaphore_url }}/api/project/{{ semaphore_project_id }}/tasks"

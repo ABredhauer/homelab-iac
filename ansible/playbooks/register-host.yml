@@ -1,5 +1,6 @@
 ---
 # ansible/playbooks/register-host.yml
+# MAC-based host registration with duplicate checking and multiple group support
 
 - name: Register New Host via MAC Lookup
   hosts: localhost
@@ -13,6 +14,9 @@
     semaphore_project_id: "{{ SEMAPHORE_PROJECT_ID }}"
     semaphore_inventory_id: "{{ SEMAPHORE_INVENTORY_ID }}"
     semaphore_api_token: "{{ SEMAPHORE_API_TOKEN }}"
+    
+    # Configuration
+    allow_reregistration: true  # Set to false to fail on duplicate
   
   tasks:
     - name: Display registration request
@@ -51,8 +55,9 @@
           ✓ Host identified:
           Hostname: {{ target_hostname }}
           Node ID: {{ host_config.node_id }}
-          Target IP: {{ host_config.primary_interface.static_ip }}
+          Target Groups: {{ host_config.target_groups | join(', ') }}
     
+    # ===== FETCH AND CHECK PRODUCTION INVENTORY =====
     - name: Fetch production inventory
       uri:
         url: "{{ semaphore_url }}/api/project/{{ semaphore_project_id }}/inventory/{{ semaphore_inventory_id }}"
@@ -79,16 +84,69 @@
             }, recursive=True)
           }}
     
-    - name: Ensure primary target group exists
+    # ===== CHECK IF HOST ALREADY EXISTS =====
+    - name: Check if host already exists in production inventory
       set_fact:
-        primary_group: "{{ host_config.target_groups[0] }}"
+        host_exists: false
+        existing_groups: []
+    
+    - name: Search for existing host across all groups
+      set_fact:
+        host_exists: >-
+          {{
+            current_inventory.all.children | dict2items |
+            selectattr('value.hosts', 'defined') |
+            selectattr('value.hosts.' + target_hostname, 'defined') |
+            list | length > 0
+          }}
+        existing_groups: >-
+          {{
+            current_inventory.all.children | dict2items |
+            selectattr('value.hosts', 'defined') |
+            selectattr('value.hosts.' + target_hostname, 'defined') |
+            map(attribute='key') | list
+          }}
+      when: current_inventory.all.children is defined
+    
+    - name: Display existing host status
+      debug:
+        msg: |
+          Host existence check:
+          - Exists: {{ host_exists }}
+          {% if host_exists %}
+          - Current groups: {{ existing_groups | join(', ') }}
+          - Current state: {{ current_inventory.all.children[existing_groups[0]].hosts[target_hostname].lifecycle_state | default('unknown') }}
+          {% endif %}
+    
+    - name: Handle duplicate registration
+      block:
+        - name: Fail if reregistration not allowed
+          fail:
+            msg: |
+              ❌ Host {{ target_hostname }} already exists in production inventory.
+              Current groups: {{ existing_groups | join(', ') }}
+              
+              To allow updates, set allow_reregistration: true
+          when: not allow_reregistration
+        
+        - name: Warn about reregistration
+          debug:
+            msg: |
+              ⚠️  Host {{ target_hostname }} already exists - will update
+              Previous groups: {{ existing_groups | join(', ') }}
+              New groups: {{ host_config.target_groups | join(', ') }}
+      when: host_exists
+    
+    # ===== ENSURE ALL TARGET GROUPS EXIST =====
+    - name: Ensure all target groups exist in production inventory
+      set_fact:
         current_inventory: >-
           {{
             current_inventory | combine({
               'all': {
                 'children': current_inventory.all.children | combine({
-                  host_config.target_groups[0]: {
-                    'hosts': current_inventory.all.children[host_config.target_groups[0]].hosts | default({}),
+                  item: {
+                    'hosts': current_inventory.all.children[item].hosts | default({}),
                     'vars': {
                       'ansible_ssh_common_args': '-o StrictHostKeyChecking=no'
                     }
@@ -97,8 +155,9 @@
               }
             }, recursive=True)
           }}
+      loop: "{{ host_config.target_groups }}"
     
-    # ===== FIX: Build host data first, then create entry with dynamic key =====
+    # ===== BUILD HOST ENTRY =====
     - name: Build host configuration data
       set_fact:
         host_data:
@@ -121,32 +180,83 @@
           storage_config: "{{ host_config.storage | default({}) }}"
           hardware: "{{ host_config.hardware | default({}) }}"
     
+    # If host exists, preserve certain fields
+    - name: Merge with existing host data if reregistering
+      block:
+        - name: Get existing host data
+          set_fact:
+            existing_host_ "{{ current_inventory.all.children[existing_groups[0]].hosts[target_hostname] }}"
+        
+        - name: Preserve lifecycle history
+          set_fact:
+            host_data: >-
+              {{
+                host_data | combine({
+                  'first_registered_at': existing_host_data.registered_at | default(ansible_date_time.iso8601),
+                  'reregistered_at': ansible_date_time.iso8601,
+                  'bootstrapped_at': existing_host_data.bootstrapped_at | default(omit),
+                  'clustered_at': existing_host_data.clustered_at | default(omit)
+                })
+              }}
+      when: host_exists
+    
     - name: Create new host entry with target hostname as key
       set_fact:
         new_host_entry: "{{ {target_hostname: host_data} }}"
     
-    # Debug to verify
     - name: Debug new host entry
       debug:
         msg: |
           New host entry:
           {{ new_host_entry | to_nice_yaml }}
     
-    - name: Add new host to production inventory
+    # ===== ADD HOST TO ALL TARGET GROUPS =====
+    - name: Add host to all target groups
       set_fact:
-        updated_inventory: >-
+        current_inventory: >-
           {{
             current_inventory | combine({
               'all': {
                 'children': current_inventory.all.children | combine({
-                  primary_group: {
-                    'hosts': (current_inventory.all.children[primary_group].hosts | default({})) | combine(new_host_entry)
+                  item: {
+                    'hosts': (current_inventory.all.children[item].hosts | default({})) | combine(new_host_entry)
                   }
                 })
               }
             }, recursive=True)
           }}
+      loop: "{{ host_config.target_groups }}"
     
+    # ===== REMOVE FROM OLD GROUPS IF REREGISTERING =====
+    - name: Remove from old groups not in new target_groups
+      set_fact:
+        current_inventory: >-
+          {{
+            current_inventory | combine({
+              'all': {
+                'children': current_inventory.all.children | combine({
+                  item: {
+                    'hosts': current_inventory.all.children[item].hosts | dict2items | 
+                             rejectattr('key', 'equalto', target_hostname) | 
+                             items2dict
+                  }
+                })
+              }
+            }, recursive=True)
+          }}
+      loop: "{{ existing_groups | difference(host_config.target_groups) }}"
+      when: host_exists and existing_groups | length > 0
+    
+    - name: Build final updated inventory
+      set_fact:
+        updated_inventory: "{{ current_inventory }}"
+    
+    - debug: Final inventory for Semaphore
+      msg: |
+        Updated inventory:
+        {{ updated_inventory | to_nice_yaml }}
+        
+    # ===== UPDATE SEMAPHORE =====
     - name: Update production inventory in Semaphore
       uri:
         url: "{{ semaphore_url }}/api/project/{{ semaphore_project_id }}/inventory/{{ semaphore_inventory_id }}"
@@ -175,10 +285,22 @@
         status_code: 201
         return_content: yes
       register: bootstrap_task
+      when: not host_exists or allow_reregistration
     
     - name: Registration complete
       debug:
         msg: |
           ✓ Registration successful
+          
           Hostname: {{ target_hostname }}
+          Node ID: {{ host_config.node_id }}
+          Status: {{ 'Updated' if host_exists else 'New' }}
+          Groups: {{ host_config.target_groups | join(', ') }}
+          {% if existing_groups | length > 0 and host_exists %}
+          Removed from: {{ existing_groups | difference(host_config.target_groups) | join(', ') or 'none' }}
+          {% endif %}
+          
+          {% if not host_exists or allow_reregistration %}
           Bootstrap task: {{ bootstrap_task.json.id }}
+          Monitor at: {{ semaphore_url }}/project/{{ semaphore_project_id }}/history?t={{ bootstrap_task.json.id }}
+          {% endif %}

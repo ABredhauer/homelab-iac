@@ -66,7 +66,7 @@
     - name: Parse production inventory
       set_fact:
         current_inventory: "{{ current_inventory_response.json.inventory | from_yaml }}"
-        inventory_meta "{{ current_inventory_response.json }}"
+        inventory_metadata: "{{ current_inventory_response.json }}"
     
     - name: Ensure all.children exists
       set_fact:
@@ -101,7 +101,7 @@
     # ===== FIX: Build host data first, then create entry with dynamic key =====
     - name: Build host configuration data
       set_fact:
-        host_
+        host_data:
           ansible_host: "{{ temp_ip_input }}"
           ansible_user: ansible
           ansible_python_interpreter: /usr/bin/python3

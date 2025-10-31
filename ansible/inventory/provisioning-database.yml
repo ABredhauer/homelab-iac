@@ -1,0 +1,112 @@
+---
+# Provisioning Database - Infrastructure as Data
+# This is your source of truth for all physical infrastructure
+# Each entry defines what a MAC address should become
+
+all:
+  children:
+    unprovisioned_hosts:
+      hosts:
+        # Node 1 - Primary cluster master
+        mac-6c3c8c4310e9:
+          # Identity
+          target_hostname: pve-node1
+          target_description: "Proxmox Node 1 - Cluster Master"
+          node_id: 1
+          
+          # Network Interfaces
+          primary_interface:
+            name: eno1
+            mac: "6c:3c:8c:43:10:e9"
+            dhcp: true  # Use DHCP during bootstrap, switch to static later
+            static_ip: 192.168.1.230
+            netmask: 255.255.255.0
+            gateway: 192.168.1.1
+            dns:
+              - 192.168.1.1
+          
+          wifi_interface:
+            mac: "a4:f9:33:7f:11:60"
+            enabled: false  # Disable WiFi on servers
+            dhcp: true
+
+          cluster_interface:
+            name: eno2
+            mac: "00:e0:4c:68:02:35"
+            dhcp: false
+            static_ip: 192.168.10.230
+            netmask: 255.255.255.0
+            gateway: 192.168.10.1
+            vlan: 10
+          
+          # Provisioning Config
+          target_groups:
+            - proxmox_nodes
+            - proxmox_cluster_members
+            - proxmox_cluster_masters
+          
+          target_role: cluster_master
+          target_cluster: homelab-cluster
+          
+          # Storage Configuration (for later use)
+          storage:
+            local_disk: /dev/nvme0n1
+            # shared_storage: true
+            # ceph_osds:
+            #  - /dev/sda
+            #  - /dev/sdb
+          
+          # Hardware Info
+          hardware:
+            manufacturer: Dell
+            cpu: Intel i5-12500
+            ram_gb: 32
+            notes: Primary node with NVMe boot drive
+        
+        # Node 2 - Cluster member
+        mac-6c3c8c2f436a:
+          target_hostname: pve-node2
+          target_description: "Proxmox Node 2 - Cluster Member"
+          node_id: 2
+          
+          primary_interface:
+            name: eno1
+            mac: "6c:3c:8c:2f:43:6a"
+            dhcp: true
+            static_ip: 192.168.1.232
+            netmask: 255.255.255.0
+            gateway: 192.168.1.1
+            dns:
+              - 192.168.1.1
+          
+          wifi_interface:
+            mac: "58:1c:f8:6d:30:49"
+            enabled: false  # Disable WiFi on servers
+            dhcp: true
+          
+          cluster_interface:
+            name: eno2
+            mac: "00:e0:4c:68:02:71"  # Update with actual MAC
+            dhcp: true
+            static_ip: 192.168.10.232
+            netmask: 255.255.255.0
+            vlan: 10
+          
+          target_groups:
+            - proxmox_nodes
+            - proxmox_cluster_members
+          
+          target_role: cluster_member
+          target_cluster: homelab-cluster
+          
+          storage:
+            local_disk: /dev/nvme0n1
+          #  shared_storage: true
+          #  ceph_osds:
+          #    - /dev/sda
+          
+          hardware:
+            manufacturer: Dell
+            cpu: Intel i5-12500
+            ram_gb: 32
+            notes: Secondary node with NVMe boot drive

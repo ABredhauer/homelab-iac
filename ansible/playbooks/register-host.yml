@@ -1,21 +1,21 @@
 ---
 # ansible/playbooks/register-host.yml
-# MAC-based host registration - looks up config from provisioning database
+# MAC-based host registration using provisioning inventory
 
 - name: Register New Host via MAC Lookup
   hosts: localhost
   connection: local
-  gather_facts: true  # Required for ansible_date_time
+  gather_facts: true
   
   vars:
-    # Input from first-boot script (via environment parameter)
+    # Input from first-boot script
     primary_mac_input: "{{ primary_mac | lower }}"
     temp_ip_input: "{{ temp_ip }}"
     
-    # Semaphore API credentials (from Variable Group)
+    # Semaphore API credentials
     semaphore_url: "{{ SEMAPHORE_WEB_ROOT }}"
     semaphore_project_id: "{{ SEMAPHORE_PROJECT_ID }}"
-    semaphore_inventory_id: "{{ SEMAPHORE_INVENTORY_ID }}"
+    semaphore_inventory_id: "{{ SEMAPHORE_INVENTORY_ID }}"  # Production inventory ID
     semaphore_api_token: "{{ SEMAPHORE_API_TOKEN }}"
   
   tasks:
@@ -25,47 +25,43 @@
           Registration request received:
           - Primary MAC: {{ primary_mac_input }}
           - Temporary IP: {{ temp_ip_input }}
-          - Searching provisioning database...
+          - Searching provisioning inventory...
     
-    - name: Load provisioning database from Git repository
-      include_vars:
-        file: "{{ playbook_dir }}/../inventory/provisioning-database.yml"
-        name: provisioning_db
-    
-    - name: Find host in provisioning database by MAC
+    # ===== SEARCH PROVISIONING INVENTORY (Ansible Native!) =====
+    - name: Find matching host in provisioning inventory
       set_fact:
-        matched_hosts: >-
+        matched_host: >-
           {{
-            provisioning_db.all.children.unprovisioned_hosts.hosts | dict2items |
+            hostvars | dict2items |
+            selectattr('value.primary_interface.mac', 'defined') |
             selectattr('value.primary_interface.mac', 'equalto', primary_mac_input) |
-            list
+            first | default({'key': 'not_found', 'value': {}})
           }}
     
     - name: Verify host was found
       assert:
         that:
-          - matched_hosts | length > 0
+          - matched_host.key != 'not_found'
+          - matched_host.value.target_hostname is defined
         fail_msg: |
-          ❌ MAC address {{ primary_mac_input }} not found in provisioning database.
+          ❌ MAC address {{ primary_mac_input }} not found in provisioning inventory.
           
-          Please add this host to: ansible/inventory/provisioning-database.yml
+          Available MACs in provisioning inventory:
+          {% for host in groups['unprovisioned_hosts'] | default([]) %}
+          - {{ hostvars[host].primary_interface.mac | default('undefined') }} → {{ hostvars[host].target_hostname | default('undefined') }}
+          {% endfor %}
           
-          Example entry:
-          mac-{{ primary_mac_input | replace(':', '') }}:
-            target_hostname: pve-nodeX
-            primary_interface:
-              mac: "{{ primary_mac_input }}"
-              static_ip: 192.168.1.XXX
+          Please add this MAC to: ansible/inventory/provisioning-database.yml
     
     - name: Extract host configuration
       set_fact:
-        host_config: "{{ matched_hosts[0].value }}"
-        target_hostname: "{{ matched_hosts[0].value.target_hostname }}"
+        host_config: "{{ matched_host.value }}"
+        target_hostname: "{{ matched_host.value.target_hostname }}"
     
     - name: Display identified host
       debug:
         msg: |
-          ✓ Host identified from provisioning database:
+          ✓ Host identified from provisioning inventory:
           
           Hostname: {{ target_hostname }}
           Node ID: {{ host_config.node_id }}
@@ -74,6 +70,7 @@
           Groups: {{ host_config.target_groups | join(', ') }}
           Role: {{ host_config.target_role }}
     
+    # ===== FETCH PRODUCTION INVENTORY VIA API =====
     - name: Fetch current production inventory from Semaphore
       uri:
         url: "{{ semaphore_url }}/api/project/{{ semaphore_project_id }}/inventory/{{ semaphore_inventory_id }}"
@@ -89,7 +86,7 @@
         current_inventory: "{{ current_inventory_response.json.inventory | from_yaml }}"
         inventory_metadata: "{{ current_inventory_response.json }}"
     
-    - name: Ensure all.children exists
+    - name: Ensure all.children exists in production inventory
       set_fact:
         current_inventory: >-
           {{
@@ -123,7 +120,7 @@
       set_fact:
         new_host_entry:
           "{{ target_hostname }}":
-            # Connection (use temp IP initially, will switch to static after network config)
+            # Connection
             ansible_host: "{{ temp_ip_input }}"
             ansible_user: root
             ansible_python_interpreter: /usr/bin/python3
@@ -138,7 +135,7 @@
             node_description: "{{ host_config.target_description }}"
             primary_mac: "{{ primary_mac_input }}"
             
-            # Network configuration (bootstrap will apply this)
+            # Network configuration
             network_interfaces:
               primary: "{{ host_config.primary_interface }}"
               cluster: "{{ host_config.cluster_interface | default({}) }}"
@@ -148,13 +145,11 @@
             target_cluster: "{{ host_config.target_cluster }}"
             cluster_role: "{{ host_config.target_role }}"
             
-            # Storage configuration (for future playbooks)
+            # Storage and hardware
             storage_config: "{{ host_config.storage | default({}) }}"
-            
-            # Hardware documentation
             hardware: "{{ host_config.hardware | default({}) }}"
     
-    - name: Add new host to inventory
+    - name: Add new host to production inventory
       set_fact:
         updated_inventory: >-
           {{
@@ -169,22 +164,7 @@
             }, recursive=True)
           }}
     
-    - name: Debug - Show body to be sent to Semaphore
-      debug:
-        msg: |
-          Body to Semaphore API:
-          id: {{ semaphore_inventory_id | int }}
-          name: {{ inventory_metadata.name }}
-          project_id: {{ semaphore_project_id | int }}
-          ssh_key_id: {{ inventory_metadata.ssh_key_id | int }}
-          become_key_id: {{ inventory_metadata.become_key_id | default(0) | int }}
-          repository_id: {{ inventory_metadata.repository_id | default(0) | int }}
-          type: static-yaml
-          
-          New host entry:
-          {{ new_host_entry | to_nice_yaml }}
-    
-    - name: Update production inventory in Semaphore
+    - name: Update production inventory in Semaphore via API
       uri:
         url: "{{ semaphore_url }}/api/project/{{ semaphore_project_id }}/inventory/{{ semaphore_inventory_id }}"
         method: PUT
@@ -197,11 +177,6 @@
         return_content: yes
       register: update_result
     
-    - name: Debug - API response
-      debug:
-        var: update_result
-      when: update_result.status != 204
-    
     - name: Trigger bootstrap playbook
       uri:
         url: "{{ semaphore_url }}/api/project/{{ semaphore_project_id }}/tasks"
@@ -211,7 +186,7 @@
           Content-Type: "application/json"
         body_format: json
         body:
-          template_id: 1
+          template_id: 1  # Bootstrap template ID
           message: "Bootstrap {{ target_hostname }}"
           environment: "{\"target_host\": \"{{ target_hostname }}\"}"
         status_code: 201

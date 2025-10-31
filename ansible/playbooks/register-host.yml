@@ -257,6 +257,24 @@
           Updated inventory:
           {{ updated_inventory | to_nice_yaml }}
 
+    - name: Debug - Save exact payload being sent
+      copy:
+        content: |
+          URL: {{ semaphore_url }}/api/project/{{ semaphore_project_id }}/inventory/{{ semaphore_inventory_id }}
+          
+          Headers:
+          Authorization: Bearer {{ semaphore_api_token }}
+          Content-Type: application/json
+          
+          Body:
+          {{ inventory_metadata | combine({'inventory': updated_inventory | to_nice_yaml}) | to_nice_json(indent=2) }}
+        dest: /tmp/semaphore_api_payload.json
+      delegate_to: localhost
+
+    - name: Display payload path
+      debug:
+        msg: "Payload saved to /tmp/semaphore_api_payload.json - review before API call"
+
     # ===== UPDATE SEMAPHORE =====
     - name: Update production inventory in Semaphore
       uri:
@@ -270,6 +288,19 @@
         status_code: 204
         return_content: yes
       register: update_result
+      failed_when: false  # Don't fail, let us see the response
+
+    - name: Show full API response
+      debug:
+        var: update_result
+
+    - name: Fail if not successful
+      fail:
+        msg: |
+          API call failed with status {{ update_result.status }}
+          Response: {{ update_result.content }}
+          URL: {{ update_result.url }}
+      when: update_result.status != 204
     
     - name: Trigger bootstrap playbook
       uri:

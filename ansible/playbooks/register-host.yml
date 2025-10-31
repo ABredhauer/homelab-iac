@@ -251,11 +251,12 @@
       set_fact:
         updated_inventory: "{{ current_inventory }}"
     
-    - debug: Final inventory for Semaphore
-      msg: |
-        Updated inventory:
-        {{ updated_inventory | to_nice_yaml }}
-        
+    - name: Final inventory for Semaphore
+      debug:
+        msg: |
+          Updated inventory:
+          {{ updated_inventory | to_nice_yaml }}
+
     # ===== UPDATE SEMAPHORE =====
     - name: Update production inventory in Semaphore
       uri:

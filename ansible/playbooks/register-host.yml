@@ -164,6 +164,11 @@
             }, recursive=True)
           }}
     
+    - debug:
+        msg: |
+          contexnt for Semaphore
+          {{ inventory_metadata | combine({'inventory': updated_inventory | to_nice_yaml}) }}
+
     - name: Update production inventory in Semaphore via API
       uri:
         url: "{{ semaphore_url }}/api/project/{{ semaphore_project_id }}/inventory/{{ semaphore_inventory_id }}"
@@ -176,6 +181,8 @@
         status_code: 204
         return_content: yes
       register: update_result
+      debug:
+        var: update_result
     
     - name: Trigger bootstrap playbook
       uri:

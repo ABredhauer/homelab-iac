@@ -1,6 +1,5 @@
 ---
 # ansible/playbooks/register-host.yml
-# MAC-based host registration using provisioning inventory
 
 - name: Register New Host via MAC Lookup
   hosts: localhost
@@ -8,14 +7,11 @@
   gather_facts: true
   
   vars:
-    # Input from first-boot script
     primary_mac_input: "{{ primary_mac | lower }}"
     temp_ip_input: "{{ temp_ip }}"
-    
-    # Semaphore API credentials
     semaphore_url: "{{ SEMAPHORE_WEB_ROOT }}"
     semaphore_project_id: "{{ SEMAPHORE_PROJECT_ID }}"
-    semaphore_inventory_id: "{{ SEMAPHORE_INVENTORY_ID }}"  # Production inventory ID
+    semaphore_inventory_id: "{{ SEMAPHORE_INVENTORY_ID }}"
     semaphore_api_token: "{{ SEMAPHORE_API_TOKEN }}"
   
   tasks:
@@ -25,9 +21,7 @@
           Registration request received:
           - Primary MAC: {{ primary_mac_input }}
           - Temporary IP: {{ temp_ip_input }}
-          - Searching provisioning inventory...
     
-    # ===== SEARCH PROVISIONING INVENTORY (Ansible Native!) =====
     - name: Find matching host in provisioning inventory
       set_fact:
         matched_host: >-
@@ -44,14 +38,7 @@
           - matched_host.key != 'not_found'
           - matched_host.value.target_hostname is defined
         fail_msg: |
-          ❌ MAC address {{ primary_mac_input }} not found in provisioning inventory.
-          
-          Available MACs in provisioning inventory:
-          {% for host in groups['unprovisioned_hosts'] | default([]) %}
-          - {{ hostvars[host].primary_interface.mac | default('undefined') }} → {{ hostvars[host].target_hostname | default('undefined') }}
-          {% endfor %}
-          
-          Please add this MAC to: ansible/inventory/provisioning-database.yml
+          ❌ MAC {{ primary_mac_input }} not found in provisioning inventory.
     
     - name: Extract host configuration
       set_fact:
@@ -61,17 +48,12 @@
     - name: Display identified host
       debug:
         msg: |
-          ✓ Host identified from provisioning inventory:
-          
+          ✓ Host identified:
           Hostname: {{ target_hostname }}
           Node ID: {{ host_config.node_id }}
-          Description: {{ host_config.target_description }}
           Target IP: {{ host_config.primary_interface.static_ip }}
-          Groups: {{ host_config.target_groups | join(', ') }}
-          Role: {{ host_config.target_role }}
     
-    # ===== FETCH PRODUCTION INVENTORY VIA API =====
-    - name: Fetch current production inventory from Semaphore
+    - name: Fetch production inventory
       uri:
         url: "{{ semaphore_url }}/api/project/{{ semaphore_project_id }}/inventory/{{ semaphore_inventory_id }}"
         method: GET
@@ -84,9 +66,9 @@
     - name: Parse production inventory
       set_fact:
         current_inventory: "{{ current_inventory_response.json.inventory | from_yaml }}"
-        inventory_metadata: "{{ current_inventory_response.json }}"
+        inventory_meta "{{ current_inventory_response.json }}"
     
-    - name: Ensure all.children exists in production inventory
+    - name: Ensure all.children exists
       set_fact:
         current_inventory: >-
           {{
@@ -116,38 +98,39 @@
             }, recursive=True)
           }}
     
-    - name: Build new host entry with provisioning data
+    # ===== FIX: Build host data first, then create entry with dynamic key =====
+    - name: Build host configuration data
       set_fact:
-        new_host_entry:
-          "{{ target_hostname }}":
-            # Connection
-            ansible_host: "{{ temp_ip_input }}"
-            ansible_user: root
-            ansible_python_interpreter: /usr/bin/python3
-            
-            # Lifecycle tracking
-            lifecycle_state: registered
-            registered_at: "{{ ansible_date_time.iso8601 }}"
-            registered_by: first-boot-automation
-            
-            # Node identification
-            node_id: "{{ host_config.node_id }}"
-            node_description: "{{ host_config.target_description }}"
-            primary_mac: "{{ primary_mac_input }}"
-            
-            # Network configuration
-            network_interfaces:
-              primary: "{{ host_config.primary_interface }}"
-              cluster: "{{ host_config.cluster_interface | default({}) }}"
-            
-            # Cluster configuration
-            cluster_member: false
-            target_cluster: "{{ host_config.target_cluster }}"
-            cluster_role: "{{ host_config.target_role }}"
-            
-            # Storage and hardware
-            storage_config: "{{ host_config.storage | default({}) }}"
-            hardware: "{{ host_config.hardware | default({}) }}"
+        host_
+          ansible_host: "{{ temp_ip_input }}"
+          ansible_user: ansible
+          ansible_python_interpreter: /usr/bin/python3
+          lifecycle_state: registered
+          registered_at: "{{ ansible_date_time.iso8601 }}"
+          registered_by: first-boot-automation
+          node_id: "{{ host_config.node_id }}"
+          node_description: "{{ host_config.target_description }}"
+          primary_mac: "{{ primary_mac_input }}"
+          network_interfaces:
+            primary: "{{ host_config.primary_interface }}"
+            wifi: "{{ host_config.wifi_interface | default({}) }}"
+            cluster: "{{ host_config.cluster_interface | default({}) }}"
+          cluster_member: false
+          target_cluster: "{{ host_config.target_cluster }}"
+          cluster_role: "{{ host_config.target_role }}"
+          storage_config: "{{ host_config.storage | default({}) }}"
+          hardware: "{{ host_config.hardware | default({}) }}"
+    
+    - name: Create new host entry with target hostname as key
+      set_fact:
+        new_host_entry: "{{ {target_hostname: host_data} }}"
+    
+    # Debug to verify
+    - name: Debug new host entry
+      debug:
+        msg: |
+          New host entry:
+          {{ new_host_entry | to_nice_yaml }}
     
     - name: Add new host to production inventory
       set_fact:
@@ -164,12 +147,7 @@
             }, recursive=True)
           }}
     
-    - debug:
-        msg: |
-          contexnt for Semaphore
-          {{ inventory_metadata | combine({'inventory': updated_inventory | to_nice_yaml}) }}
-
-    - name: Update production inventory in Semaphore via API
+    - name: Update production inventory in Semaphore
       uri:
         url: "{{ semaphore_url }}/api/project/{{ semaphore_project_id }}/inventory/{{ semaphore_inventory_id }}"
         method: PUT
@@ -181,7 +159,7 @@
         status_code: 204
         return_content: yes
       register: update_result
-      
+    
     - name: Trigger bootstrap playbook
       uri:
         url: "{{ semaphore_url }}/api/project/{{ semaphore_project_id }}/tasks"
@@ -191,7 +169,7 @@
           Content-Type: "application/json"
         body_format: json
         body:
-          template_id: 1  # Bootstrap template ID
+          template_id: 1
           message: "Bootstrap {{ target_hostname }}"
           environment: "{\"target_host\": \"{{ target_hostname }}\"}"
         status_code: 201
@@ -202,13 +180,5 @@
       debug:
         msg: |
           ✓ Registration successful
-          
           Hostname: {{ target_hostname }}
-          Node ID: {{ host_config.node_id }}
-          Temporary IP: {{ temp_ip_input }}
-          Target IP: {{ host_config.primary_interface.static_ip }}
-          Groups: {{ host_config.target_groups | join(', ') }}
-          Lifecycle State: registered
-          
-          Bootstrap job triggered: Task {{ bootstrap_task.json.id }}
-          Monitor at: {{ semaphore_url }}/project/{{ semaphore_project_id }}/history?t={{ bootstrap_task.json.id }}
+          Bootstrap task: {{ bootstrap_task.json.id }}

@@ -331,6 +331,22 @@
           URL: {{ update_result.url }}
       when: update_result.status != 204
 
+    - name: Debug - Show exact body being sent
+      ansible.builtin.debug:
+        msg: |
+          URL: {{ semaphore_url }}/api/project/{{ semaphore_project_id }}/tasks
+          Body: {{ body_payload | to_nice_json }}
+      vars:
+        body_payload:
+          template_id: "{{ bootstrap_template_id | int }}"
+          message: "Bootstrap {{ target_hostname }}"
+          limit: "{{ target_hostname }}"
+          params:
+            debug: false
+            dry_run: true
+            diff: false
+
+
     - name: Trigger bootstrap playbook
       ansible.builtin.uri:
         url: "{{ semaphore_url }}/api/project/{{ semaphore_project_id }}/tasks"

@@ -337,8 +337,21 @@
         status_code: 201
         return_content: yes
       register: bootstrap_task
+      failed_when: false  # Don't fail, let us see the response
       when: not host_exists or allow_reregistration
     
+    - name: Show full API response
+      debug:
+        var: bootstrap_task
+
+    - name: Fail if not successful
+      fail:
+        msg: |
+          API call failed with status {{ bootstrap_task.status }}
+          Response: {{ bootstrap_task.content }}
+          URL: {{ bootstrap_task.url }}
+      when: bootstrap_task.status != 204
+
     - name: Registration complete
       debug:
         msg: |

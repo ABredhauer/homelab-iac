@@ -210,8 +210,27 @@
           New host entry:
           {{ new_host_entry | to_nice_yaml }}
     
-    # ===== ADD HOST TO ALL TARGET GROUPS =====
-    - name: Add host to all target groups
+
+    - name: Add host to primary group with full definition
+      set_fact:
+        primary_group: "{{ host_config.target_groups[0] }}"
+
+    - name: Add host with full data to primary group
+      set_fact:
+        current_inventory: >-
+          {{
+            current_inventory | combine({
+              'all': {
+                'children': current_inventory.all.children | combine({
+                  primary_group: {
+                    'hosts': (current_inventory.all.children[primary_group].hosts | default({})) | combine(new_host_entry)
+                  }
+                })
+              }
+            }, recursive=True)
+          }}
+
+    - name: Add host references to additional groups
       set_fact:
         current_inventory: >-
           {{
@@ -219,13 +238,14 @@
               'all': {
                 'children': current_inventory.all.children | combine({
                   item: {
-                    'hosts': (current_inventory.all.children[item].hosts | default({})) | combine(new_host_entry)
+                    'hosts': (current_inventory.all.children[item].hosts | default({})) | combine({target_hostname: {}})
                   }
                 })
               }
             }, recursive=True)
           }}
-      loop: "{{ host_config.target_groups }}"
+      loop: "{{ host_config.target_groups[1:] }}"
+      when: host_config.target_groups | length > 1
     
     # ===== REMOVE FROM OLD GROUPS IF REREGISTERING =====
     - name: Remove from old groups not in new target_groups
@@ -251,29 +271,29 @@
       set_fact:
         updated_inventory: "{{ current_inventory }}"
     
-    - name: Final inventory for Semaphore
-      debug:
-        msg: |
-          Updated inventory:
-          {{ updated_inventory | to_nice_yaml }}
+    # - name: Final inventory for Semaphore
+    #   debug:
+    #     msg: |
+    #       Updated inventory:
+    #       {{ updated_inventory | to_nice_yaml }}
 
-    - name: Debug - Save exact payload being sent
-      copy:
-        content: |
-          URL: {{ semaphore_url }}/api/project/{{ semaphore_project_id }}/inventory/{{ semaphore_inventory_id }}
+    # - name: Debug - Save exact payload being sent
+    #   copy:
+    #     content: |
+    #       URL: {{ semaphore_url }}/api/project/{{ semaphore_project_id }}/inventory/{{ semaphore_inventory_id }}
           
-          Headers:
-          Authorization: Bearer {{ semaphore_api_token }}
-          Content-Type: application/json
+    #       Headers:
+    #       Authorization: Bearer {{ semaphore_api_token }}
+    #       Content-Type: application/json
           
-          Body:
-          {{ inventory_metadata | combine({'inventory': updated_inventory | to_nice_yaml}) | to_nice_json(indent=2) }}
-        dest: /tmp/semaphore_api_payload.json
-      delegate_to: localhost
+    #       Body:
+    #       {{ inventory_metadata | combine({'inventory': updated_inventory | to_nice_yaml}) | to_nice_json(indent=2) }}
+    #     dest: /tmp/semaphore_api_payload.json
+    #   delegate_to: localhost
 
-    - name: Display payload path
-      debug:
-        msg: "Payload saved to /tmp/semaphore_api_payload.json - review before API call"
+    # - name: Display payload path
+    #   debug:
+    #     msg: "Payload saved to /tmp/semaphore_api_payload.json - review before API call"
 
     # ===== UPDATE SEMAPHORE =====
     - name: Update production inventory in Semaphore

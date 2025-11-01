@@ -6,7 +6,7 @@
   hosts: localhost
   connection: local
   gather_facts: true
-  
+
   vars:
     # Input parameters (passed via environment parameters in Semaphore)
     primary_mac_input: "{{ primary_mac | lower }}"
@@ -20,10 +20,10 @@
     semaphore_project_id: "{{ SEMAPHORE_PROJECT_ID }}"
     semaphore_inventory_id: "{{ SEMAPHORE_INVENTORY_ID }}"
     semaphore_api_token: "{{ SEMAPHORE_API_TOKEN }}"
-    
+
     # Configuration
     allow_reregistration: true  # Set to false to fail on duplicate
-  
+
   tasks:
     - name: Display registration request
       debug:
@@ -31,9 +31,9 @@
           Registration request received:
           - Primary MAC: {{ primary_mac_input }}
           - Temporary IP: {{ temp_ip_input }}
-    
+
     - name: Find matching host in provisioning inventory
-      set_fact:
+      ansible.builtin.set_fact:
         matched_host: >-
           {{
             hostvars | dict2items |
@@ -41,7 +41,7 @@
             selectattr('value.primary_interface.mac', 'equalto', primary_mac_input) |
             first | default({'key': 'not_found', 'value': {}})
           }}
-    
+
     - name: Verify host was found
       assert:
         that:
@@ -49,12 +49,12 @@
           - matched_host.value.target_hostname is defined
         fail_msg: |
           ❌ MAC {{ primary_mac_input }} not found in provisioning inventory.
-    
+
     - name: Extract host configuration
       set_fact:
         host_config: "{{ matched_host.value }}"
         target_hostname: "{{ matched_host.value.target_hostname }}"
-    
+
     - name: Display identified host
       debug:
         msg: |
@@ -62,7 +62,7 @@
           Hostname: {{ target_hostname }}
           Node ID: {{ host_config.node_id }}
           Target Groups: {{ host_config.target_groups | join(', ') }}
-    
+
     # ===== FETCH AND CHECK PRODUCTION INVENTORY =====
     - name: Fetch production inventory
       uri:
@@ -70,17 +70,17 @@
         method: GET
         headers:
           Authorization: "Bearer {{ semaphore_api_token }}"
-        return_content: yes
+        return_content: true
         status_code: 200
       register: current_inventory_response
-    
+
     - name: Parse production inventory
-      set_fact:
+      ansible.builtin.set_fact:
         current_inventory: "{{ current_inventory_response.json.inventory | from_yaml }}"
         inventory_metadata: "{{ current_inventory_response.json }}"
-    
+
     - name: Ensure all.children exists
-      set_fact:
+      ansible.builtin.set_fact:
         current_inventory: >-
           {{
             current_inventory | combine({
@@ -89,15 +89,15 @@
               }
             }, recursive=True)
           }}
-    
+
     # ===== CHECK IF HOST ALREADY EXISTS =====
     - name: Check if host already exists in production inventory
-      set_fact:
+      ansible.builtin.set_fact:
         host_exists: false
         existing_groups: []
-    
+
     - name: Search for existing host across all groups
-      set_fact:
+      ansible.builtin.set_fact:
         host_exists: >-
           {{
             current_inventory.all.children | dict2items |
@@ -113,7 +113,7 @@
             map(attribute='key') | list
           }}
       when: current_inventory.all.children is defined
-    
+
     - name: Display existing host status
       debug:
         msg: |
@@ -123,7 +123,7 @@
           - Current groups: {{ existing_groups | join(', ') }}
           - Current state: {{ current_inventory.all.children[existing_groups[0]].hosts[target_hostname].lifecycle_state | default('unknown') }}
           {% endif %}
-    
+
     - name: Handle duplicate registration
       block:
         - name: Fail if reregistration not allowed
@@ -131,10 +131,10 @@
             msg: |
               ❌ Host {{ target_hostname }} already exists in production inventory.
               Current groups: {{ existing_groups | join(', ') }}
-              
+
               To allow updates, set allow_reregistration: true
           when: not allow_reregistration
-        
+
         - name: Warn about reregistration
           debug:
             msg: |
@@ -142,10 +142,10 @@
               Previous groups: {{ existing_groups | join(', ') }}
               New groups: {{ host_config.target_groups | join(', ') }}
       when: host_exists
-    
+
     # ===== ENSURE ALL TARGET GROUPS EXIST =====
     - name: Ensure all target groups exist in production inventory
-      set_fact:
+      ansible.builtin.set_fact:
         current_inventory: >-
           {{
             current_inventory | combine({
@@ -162,10 +162,10 @@
             }, recursive=True)
           }}
       loop: "{{ host_config.target_groups }}"
-    
+
     # ===== BUILD HOST ENTRY =====
     - name: Build host configuration data
-      set_fact:
+      ansible.builtin.set_fact:
         host_data:
           ansible_host: "{{ temp_ip_input }}"
           ansible_user: ansible
@@ -185,16 +185,16 @@
           cluster_role: "{{ host_config.target_role }}"
           storage_config: "{{ host_config.storage | default({}) }}"
           hardware: "{{ host_config.hardware | default({}) }}"
-    
+
     # If host exists, preserve certain fields
     - name: Merge with existing host data if reregistering
       block:
         - name: Get existing host data
-          set_fact:
+          ansible.builtin.set_fact:
             existing_host_ "{{ current_inventory.all.children[existing_groups[0]].hosts[target_hostname] }}"
-        
+
         - name: Preserve lifecycle history
-          set_fact:
+          ansible.builtin.set_fact:
             host_data: >-
               {{
                 host_data | combine({
@@ -205,24 +205,24 @@
                 })
               }}
       when: host_exists
-    
+
     - name: Create new host entry with target hostname as key
-      set_fact:
+      ansible.builtin.set_fact:
         new_host_entry: "{{ {target_hostname: host_data} }}"
-    
+
     - name: Debug new host entry
       debug:
         msg: |
           New host entry:
           {{ new_host_entry | to_nice_yaml }}
-    
+
 
     - name: Add host to primary group with full definition
-      set_fact:
+      ansible.builtin.set_fact:
         primary_group: "{{ host_config.target_groups[0] }}"
 
     - name: Add host with full data to primary group
-      set_fact:
+      ansible.builtin.set_fact:
         current_inventory: >-
           {{
             current_inventory | combine({
@@ -237,7 +237,7 @@
           }}
 
     - name: Add host references to additional groups
-      set_fact:
+      ansible.builtin.set_fact:
         current_inventory: >-
           {{
             current_inventory | combine({
@@ -252,10 +252,10 @@
           }}
       loop: "{{ host_config.target_groups[1:] }}"
       when: host_config.target_groups | length > 1
-    
+
     # ===== REMOVE FROM OLD GROUPS IF REREGISTERING =====
     - name: Remove from old groups not in new target_groups
-      set_fact:
+      ansible.builtin.set_fact:
         current_inventory: >-
           {{
             current_inventory | combine({
@@ -272,11 +272,11 @@
           }}
       loop: "{{ existing_groups | difference(host_config.target_groups) }}"
       when: host_exists and existing_groups | length > 0
-    
+
     - name: Build final updated inventory
-      set_fact:
+      ansible.builtin.set_fact:
         updated_inventory: "{{ current_inventory }}"
-    
+
     # - name: Final inventory for Semaphore
     #   debug:
     #     msg: |
@@ -287,11 +287,11 @@
     #   copy:
     #     content: |
     #       URL: {{ semaphore_url }}/api/project/{{ semaphore_project_id }}/inventory/{{ semaphore_inventory_id }}
-          
+
     #       Headers:
     #       Authorization: Bearer {{ semaphore_api_token }}
     #       Content-Type: application/json
-          
+
     #       Body:
     #       {{ inventory_metadata | combine({'inventory': updated_inventory | to_nice_yaml}) | to_nice_json(indent=2) }}
     #     dest: /tmp/semaphore_api_payload.json
@@ -327,7 +327,7 @@
           Response: {{ update_result.content }}
           URL: {{ update_result.url }}
       when: update_result.status != 204
-    
+
     - name: Trigger bootstrap playbook
       uri:
         url: "{{ semaphore_url }}/api/project/{{ semaphore_project_id }}/tasks"
@@ -337,17 +337,19 @@
           Content-Type: "application/json"
         body_format: json
         body:
-          project_id: "{{ semaphore_project_id | int }}"
           template_id: "{{ bootstrap_template_id | int }}"
-          dry_run: true
-          limit: "{{ target_hostname }}"
           message: "Bootstrap {{ target_hostname }}"
+          limit: "{{ target_hostname }}"
+          params:
+            debug: false
+            dry_run: true
+            diff: false
         status_code: 201
         return_content: yes
       register: bootstrap_task
       failed_when: false  # Don't fail, let us see the response
       when: not host_exists or allow_reregistration
-    
+
     - name: Show full API response
       debug:
         var: bootstrap_task
@@ -364,7 +366,7 @@
       debug:
         msg: |
           ✓ Registration successful
-          
+
           Hostname: {{ target_hostname }}
           Node ID: {{ host_config.node_id }}
           Status: {{ 'Updated' if host_exists else 'New' }}
@@ -373,7 +375,7 @@
           {% if existing_groups | length > 0 and host_exists %}
           Removed from: {{ existing_groups | difference(host_config.target_groups) | join(', ') or 'none' }}
           {% endif %}
-          
+
           {% if not host_exists or allow_reregistration %}
           Bootstrap task: {{ bootstrap_task.json.id }}
           Monitor at: {{ semaphore_url }}/project/{{ semaphore_project_id }}/history?t={{ bootstrap_task.json.id }}

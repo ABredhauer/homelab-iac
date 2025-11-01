@@ -8,8 +8,14 @@
   gather_facts: true
   
   vars:
+    # Input parameters (passed via environment parameters in Semaphore)
     primary_mac_input: "{{ primary_mac | lower }}"
     temp_ip_input: "{{ temp_ip }}"
+
+    # Optional: Bootstrap template override (passed via environment parameter)
+    bootstrap_template_id: "{{ bootstrap_template_id | default(DEFAULT_BOOTSTRAP_TEMPLATE_ID | default('1')) }}"
+
+    # Semaphore API details (set as environment variables in Semaphore)
     semaphore_url: "{{ SEMAPHORE_WEB_ROOT }}"
     semaphore_project_id: "{{ SEMAPHORE_PROJECT_ID }}"
     semaphore_inventory_id: "{{ SEMAPHORE_INVENTORY_ID }}"
@@ -331,9 +337,11 @@
           Content-Type: "application/json"
         body_format: json
         body:
-          template_id: 1
+          project_id: "{{ semaphore_project_id | int }}"
+          template_id: "{{ bootstrap_template_id | int }}"
+          dry_run: true
+          limit: "{{ target_hostname }}"
           message: "Bootstrap {{ target_hostname }}"
-          environment: "{\"target_host\": \"{{ target_hostname }}\"}"
         status_code: 201
         return_content: yes
       register: bootstrap_task
@@ -361,6 +369,7 @@
           Node ID: {{ host_config.node_id }}
           Status: {{ 'Updated' if host_exists else 'New' }}
           Groups: {{ host_config.target_groups | join(', ') }}
+          Bootstrap Template: {{ bootstrap_template_id }}
           {% if existing_groups | length > 0 and host_exists %}
           Removed from: {{ existing_groups | difference(host_config.target_groups) | join(', ') or 'none' }}
           {% endif %}

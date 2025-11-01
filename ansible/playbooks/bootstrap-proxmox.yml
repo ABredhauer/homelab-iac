@@ -1,60 +1,52 @@
 ---
 # ansible/playbooks/bootstrap-proxmox.yml
-# Complete Proxmox bootstrap - handles everything after first-boot
+# Bootstrap Proxmox host - sets hostname, configures network, installs packages
 
 - name: Bootstrap Proxmox Host
-  hosts: "{{ target_host }}"
+  hosts: proxmox_nodes
   become: true
-  gather_facts: true
+  gather_facts: true  # Required for ansible_date_time and system facts
   
   vars:
-    # Node identification mappings
-    node_mappings:
-      "6c:3c:8c:43:10:e9":
-        hostname: pve-node1
-        node_id: 1
-        ip: 192.168.1.230
-      "6c:3c:8c:2f:43:6a":
-        hostname: pve-node2
-        node_id: 2
-        ip: 192.168.1.232
+    # Get config from inventory
+    target_hostname: "{{ inventory_hostname }}"
+    node_id: "{{ hostvars[inventory_hostname].node_id }}"
+    node_description: "{{ hostvars[inventory_hostname].node_description }}"
+    primary_mac: "{{ hostvars[inventory_hostname].primary_mac }}"
+    network_config: "{{ hostvars[inventory_hostname].network_interfaces }}"
+    target_ip: "{{ network_config.primary.static_ip }}"
     
-    # Get MAC from extra vars or detect it
-    primary_mac: "{{ primary_mac | default(ansible_default_ipv4.macaddress) }}"
-    
-    # Node configuration
-    github_user: "ABredhauer"
-    repo_url: "https://github.com/ABredhauer/homelab-iac.git"
-    repo_dir: "/opt/homelab-iac"
-    cluster_name: "homelab"
+    # Semaphore API (from Variable Group)
+    semaphore_url: "{{ SEMAPHORE_WEB_ROOT }}"
+    semaphore_project_id: "{{ SEMAPHORE_PROJECT_ID }}"
+    semaphore_inventory_id: "{{ SEMAPHORE_INVENTORY_ID }}"
+    semaphore_api_token: "{{ SEMAPHORE_API_TOKEN }}"
   
   tasks:
-    # ===== Node Identification =====
-    - name: Identify node by MAC address
-      set_fact:
-        node_config: "{{ node_mappings[primary_mac] | default({'hostname': 'pve-unknown-' + ansible_date_time.epoch, 'node_id': 99, 'ip': ansible_default_ipv4.address}) }}"
-    
-    - name: Display node identification
+    - name: Display bootstrap information
       debug:
         msg: |
-          Node Identified:
-          - MAC: {{ primary_mac }}
-          - Hostname: {{ node_config.hostname }}
-          - Node ID: {{ node_config.node_id }}
-          - IP: {{ node_config.ip }}
+          Bootstrapping Proxmox Host
+          ==========================
+          Target Hostname: {{ target_hostname }}
+          Node ID: {{ node_id }}
+          Description: {{ node_description }}
+          Current IP: {{ ansible_default_ipv4.address }}
+          Target IP: {{ target_ip }}
+          Primary MAC: {{ primary_mac }}
     
-    # ===== System Identity Configuration =====
-    - name: Set hostname
+    # ===== HOSTNAME CONFIGURATION =====
+    - name: Set system hostname
       hostname:
-        name: "{{ node_config.hostname }}"
+        name: "{{ target_hostname }}"
     
-    - name: Backup existing /etc/hosts
+    - name: Backup /etc/hosts
       copy:
         src: /etc/hosts
         dest: "/etc/hosts.backup.{{ ansible_date_time.epoch }}"
         remote_src: yes
     
-    - name: Remove temp hostname entries
+    - name: Configure /etc/hosts - Remove temp entries
       lineinfile:
         path: /etc/hosts
         regexp: ".*pve-temp.*"
@@ -63,9 +55,8 @@
     - name: Configure /etc/hosts - localhost entry
       lineinfile:
         path: /etc/hosts
-        line: "127.0.1.1 {{ node_config.hostname }}.homelab.local {{ node_config.hostname }}"
+        line: "127.0.1.1 {{ target_hostname }}.homelab.local {{ target_hostname }}"
         regexp: "^127\\.0\\.1\\.1"
-        state: present
     
     - name: Configure /etc/hosts - cluster nodes
       blockinfile:
@@ -76,28 +67,28 @@
           192.168.1.230 pve-node1.homelab.local pve-node1
           192.168.1.232 pve-node2.homelab.local pve-node2
     
-    # ===== Repository Configuration =====
-    - name: Disable enterprise repositories (deb822 format)
+    # ===== REPOSITORY CONFIGURATION =====
+    - name: Disable Proxmox enterprise repositories (deb822 format)
       replace:
         path: "{{ item }}"
         regexp: '^(Types:|URIs:|Suites:|Components:|Signed-By:)'
         replace: '# \1'
       with_fileglob:
         - /etc/apt/sources.list.d/*.sources
-      when: "'enterprise.proxmox.com' in lookup('file', item)"
+      when: "'enterprise.proxmox.com' in lookup('file', item, errors='ignore')"
       ignore_errors: yes
     
-    - name: Disable enterprise repositories (legacy format)
+    - name: Disable enterprise repositories (legacy .list format)
       shell: |
         for file in /etc/apt/sources.list.d/*.list; do
-          if grep -q "enterprise.proxmox.com" "$file" 2>/dev/null; then
+          if [ -f "$file" ] && grep -q "enterprise.proxmox.com" "$file"; then
             mv "$file" "$file.disabled"
           fi
         done
       args:
         executable: /bin/bash
     
-    - name: Configure Proxmox VE no-subscription repository
+    - name: Configure Proxmox no-subscription repository
       copy:
         dest: /etc/apt/sources.list.d/proxmox.sources
         content: |
@@ -106,8 +97,6 @@
           Suites: trixie
           Components: pve-no-subscription
           Signed-By: /usr/share/keyrings/proxmox-archive-keyring.gpg
-        owner: root
-        group: root
         mode: '0644'
     
     - name: Configure Ceph no-subscription repository
@@ -119,11 +108,9 @@
           Suites: trixie
           Components: no-subscription
           Signed-By: /usr/share/keyrings/proxmox-archive-keyring.gpg
-        owner: root
-        group: root
         mode: '0644'
     
-    # ===== Package Management =====
+    # ===== PACKAGE MANAGEMENT =====
     - name: Update apt cache
       apt:
         update_cache: yes
@@ -157,111 +144,127 @@
         autoremove: yes
         autoclean: yes
     
-    # ===== Proxmox Configuration =====
-    - name: Remove subscription nag from Web UI
+    # ===== PROXMOX CONFIGURATION =====
+    - name: Remove subscription nag
       replace:
         path: /usr/share/javascript/proxmox-widget-toolkit/proxmoxlib.js
         regexp: '(data\.status !== .active.)'
         replace: 'false'
       ignore_errors: yes
     
-    - name: Enable Proxmox HA services
+    - name: Enable Proxmox services
       systemd:
         name: "{{ item }}"
         enabled: yes
         state: started
       loop:
-        - pve-ha-lrm
-        - pve-ha-crm
-        - corosync
         - pveproxy
         - pvedaemon
         - pvestatd
+        - pve-ha-lrm
+        - pve-ha-crm
+        - corosync
       ignore_errors: yes
     
-    # ===== Infrastructure Repository =====
-    - name: Clone or update infrastructure repository
-      git:
-        repo: "{{ repo_url }}"
-        dest: "{{ repo_dir }}"
-        version: main
-        force: yes
-      ignore_errors: yes
-    
-    # ===== System Configuration =====
+    # ===== SYSTEM CONFIGURATION =====
     - name: Configure timezone
       timezone:
         name: Australia/Brisbane
     
-    - name: Configure NTP servers
+    - name: Configure NTP
       copy:
         dest: /etc/systemd/timesyncd.conf
         content: |
           [Time]
-          NTP=0.au.pool.ntp.org 1.au.pool.ntp.org 2.au.pool.ntp.org 3.au.pool.ntp.org
+          NTP=0.au.pool.ntp.org 1.au.pool.ntp.org 2.au.pool.ntp.org
           FallbackNTP=ntp.ubuntu.com
-        owner: root
-        group: root
         mode: '0644'
       notify: restart timesyncd
     
-    # ===== Completion Markers =====
-    - name: Create bootstrap completion marker
+    # ===== COMPLETION MARKERS =====
+    - name: Create bootstrap completion file
       copy:
         dest: /opt/ansible-bootstrap-complete
         content: |
           Ansible Bootstrap Complete
           ==========================
-          Node: {{ node_config.hostname }}
-          Node ID: {{ node_config.node_id }}
-          MAC: {{ primary_mac }}
-          IP: {{ ansible_default_ipv4.address }}
-          Completed: {{ ansible_date_time.iso8601 }}
+          Hostname: {{ target_hostname }}
+          Node ID: {{ node_id }}
+          Description: {{ node_description }}
+          Primary MAC: {{ primary_mac }}
+          IP Address: {{ ansible_default_ipv4.address }}
+          Bootstrapped: {{ ansible_date_time.iso8601 }}
           By: Ansible Semaphore
-        owner: root
-        group: root
         mode: '0644'
     
     - name: Create node identity file
       copy:
         dest: /opt/homelab-node-identity
-        content: "{{ node_config.hostname }}"
-        owner: root
-        group: root
+        content: "{{ target_hostname }}"
         mode: '0644'
     
-    - name: Create detailed bootstrap log
-      copy:
-        dest: /opt/homelab-bootstrap-complete
-        content: |
-          Bootstrap completed: {{ ansible_date_time.iso8601 }}
-          Node name: {{ node_config.hostname }}
-          Node ID: {{ node_config.node_id }}
-          MAC address: {{ primary_mac }}
-          IP address: {{ ansible_default_ipv4.address }}
-          OS: {{ ansible_distribution }} {{ ansible_distribution_version }}
-          Kernel: {{ ansible_kernel }}
-          Repository: {{ repo_url }}
-          Managed by: Ansible Semaphore
-        owner: root
-        group: root
-        mode: '0644'
+    # ===== UPDATE LIFECYCLE STATE =====
+    - name: Fetch current inventory from Semaphore
+      uri:
+        url: "{{ semaphore_url }}/api/project/{{ semaphore_project_id }}/inventory/{{ semaphore_inventory_id }}"
+        method: GET
+        headers:
+          Authorization: "Bearer {{ semaphore_api_token }}"
+        return_content: yes
+      register: inventory_fetch
+      delegate_to: localhost
     
-    - name: Display completion summary
+    - name: Parse inventory
+      set_fact:
+        current_inv: "{{ inventory_fetch.json.inventory | from_yaml }}"
+        inv_meta: "{{ inventory_fetch.json }}"
+      delegate_to: localhost
+    
+    - name: Update host lifecycle state to bootstrapped
+      set_fact:
+        updated_inv: >-
+          {{
+            current_inv | combine({
+              'all': {
+                'children': {
+                  'proxmox_nodes': {
+                    'hosts': current_inv.all.children.proxmox_nodes.hosts | combine({
+                      inventory_hostname: current_inv.all.children.proxmox_nodes.hosts[inventory_hostname] | combine({
+                        'lifecycle_state': 'bootstrapped',
+                        'bootstrapped_at': ansible_date_time.iso8601,
+                        'ansible_host': target_ip
+                      })
+                    })
+                  }
+                }
+              }
+            }, recursive=True)
+          }}
+      delegate_to: localhost
+    
+    - name: Save updated inventory to Semaphore
+      uri:
+        url: "{{ semaphore_url }}/api/project/{{ semaphore_project_id }}/inventory/{{ semaphore_inventory_id }}"
+        method: PUT
+        headers:
+          Authorization: "Bearer {{ semaphore_api_token }}"
+          Content-Type: "application/json"
+        body_format: json
+        body: "{{ inv_meta | combine({'inventory': updated_inv | to_nice_yaml}) }}"
+        status_code: 204
+      delegate_to: localhost
+    
+    - name: Display completion message
       debug:
         msg: |
-          ✓ Bootstrap complete for {{ node_config.hostname }}
+          ✓ Bootstrap complete for {{ target_hostname }}
+          ✓ Hostname configured
+          ✓ Repositories updated
           ✓ System packages upgraded
-          ✓ Proxmox repositories configured
-          ✓ HA services enabled
-          ✓ Hostname and network configured
-          ✓ Ready for cluster operations
+          ✓ Proxmox services enabled
+          ✓ Lifecycle state: bootstrapped
           
-          Next steps:
-          - Review configuration in Proxmox UI
-          - Configure network bonding (manual or future playbook)
-          - Join to cluster (manual or future playbook)
-          - Configure shared storage
+          Next: Configure network interfaces and join cluster
   
   handlers:
     - name: restart timesyncd

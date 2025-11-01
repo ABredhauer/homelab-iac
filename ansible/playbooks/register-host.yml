@@ -20,13 +20,14 @@
     semaphore_project_id: "{{ SEMAPHORE_PROJECT_ID }}"
     semaphore_inventory_id: "{{ SEMAPHORE_INVENTORY_ID }}"
     semaphore_api_token: "{{ SEMAPHORE_API_TOKEN }}"
+    semaphore_api_timeout: "{{ SEMAPHORE_API_TIMEOUT | default(30) }}"
 
     # Configuration
     allow_reregistration: true  # Set to false to fail on duplicate
 
   tasks:
     - name: Display registration request
-      debug:
+      ansible.builtin.debug:
         msg: |
           Registration request received:
           - Primary MAC: {{ primary_mac_input }}
@@ -43,7 +44,7 @@
           }}
 
     - name: Verify host was found
-      assert:
+      ansible.builtin.assert:
         that:
           - matched_host.key != 'not_found'
           - matched_host.value.target_hostname is defined
@@ -51,12 +52,12 @@
           ❌ MAC {{ primary_mac_input }} not found in provisioning inventory.
 
     - name: Extract host configuration
-      set_fact:
+      ansible.builtin.set_fact:
         host_config: "{{ matched_host.value }}"
         target_hostname: "{{ matched_host.value.target_hostname }}"
 
     - name: Display identified host
-      debug:
+      ansible.builtin.debug:
         msg: |
           ✓ Host identified:
           Hostname: {{ target_hostname }}
@@ -65,7 +66,7 @@
 
     # ===== FETCH AND CHECK PRODUCTION INVENTORY =====
     - name: Fetch production inventory
-      uri:
+      ansible.builtin.uri:
         url: "{{ semaphore_url }}/api/project/{{ semaphore_project_id }}/inventory/{{ semaphore_inventory_id }}"
         method: GET
         headers:
@@ -115,7 +116,7 @@
       when: current_inventory.all.children is defined
 
     - name: Display existing host status
-      debug:
+      ansible.builtin.debug:
         msg: |
           Host existence check:
           - Exists: {{ host_exists }}
@@ -125,9 +126,10 @@
           {% endif %}
 
     - name: Handle duplicate registration
+      when: host_exists
       block:
         - name: Fail if reregistration not allowed
-          fail:
+          ansible.builtin.fail:
             msg: |
               ❌ Host {{ target_hostname }} already exists in production inventory.
               Current groups: {{ existing_groups | join(', ') }}
@@ -136,12 +138,12 @@
           when: not allow_reregistration
 
         - name: Warn about reregistration
-          debug:
+          ansible.builtin.debug:
             msg: |
               ⚠️  Host {{ target_hostname }} already exists - will update
               Previous groups: {{ existing_groups | join(', ') }}
               New groups: {{ host_config.target_groups | join(', ') }}
-      when: host_exists
+
 
     # ===== ENSURE ALL TARGET GROUPS EXIST =====
     - name: Ensure all target groups exist in production inventory
@@ -188,6 +190,7 @@
 
     # If host exists, preserve certain fields
     - name: Merge with existing host data if reregistering
+      when: host_exists
       block:
         - name: Get existing host data
           ansible.builtin.set_fact:
@@ -204,14 +207,14 @@
                   'clustered_at': existing_host_data.clustered_at | default(omit)
                 })
               }}
-      when: host_exists
+
 
     - name: Create new host entry with target hostname as key
       ansible.builtin.set_fact:
         new_host_entry: "{{ {target_hostname: host_data} }}"
 
     - name: Debug new host entry
-      debug:
+      ansible.builtin.debug:
         msg: |
           New host entry:
           {{ new_host_entry | to_nice_yaml }}
@@ -262,8 +265,8 @@
               'all': {
                 'children': current_inventory.all.children | combine({
                   item: {
-                    'hosts': current_inventory.all.children[item].hosts | dict2items | 
-                             rejectattr('key', 'equalto', target_hostname) | 
+                    'hosts': current_inventory.all.children[item].hosts | dict2items |
+                             rejectattr('key', 'equalto', target_hostname) |
                              items2dict
                   }
                 })
@@ -303,7 +306,7 @@
 
     # ===== UPDATE SEMAPHORE =====
     - name: Update production inventory in Semaphore
-      uri:
+      ansible.builtin.uri:
         url: "{{ semaphore_url }}/api/project/{{ semaphore_project_id }}/inventory/{{ semaphore_inventory_id }}"
         method: PUT
         headers:
@@ -311,17 +314,17 @@
           Content-Type: "application/json"
         body_format: json
         body: "{{ inventory_metadata | combine({'inventory': updated_inventory | to_nice_yaml}) }}"
+        timeout: "{{ semaphore_api_timeout }}"
         status_code: 204
-        return_content: yes
+        return_content: true
       register: update_result
       failed_when: false  # Don't fail, let us see the response
-
     - name: Show full API response
-      debug:
+      ansible.builtin.debug:
         var: update_result
 
     - name: Fail if not successful
-      fail:
+      ansible.builtin.fail:
         msg: |
           API call failed with status {{ update_result.status }}
           Response: {{ update_result.content }}
@@ -329,7 +332,7 @@
       when: update_result.status != 204
 
     - name: Trigger bootstrap playbook
-      uri:
+      ansible.builtin.uri:
         url: "{{ semaphore_url }}/api/project/{{ semaphore_project_id }}/tasks"
         method: POST
         headers:
@@ -344,18 +347,18 @@
             debug: false
             dry_run: true
             diff: false
+        timeout: "{{ semaphore_api_timeout }}"
         status_code: 201
-        return_content: yes
+        return_content: true
       register: bootstrap_task
       failed_when: false  # Don't fail, let us see the response
       when: not host_exists or allow_reregistration
-
     - name: Show full API response
-      debug:
+      ansible.builtin.debug:
         var: bootstrap_task
 
     - name: Fail if not successful
-      fail:
+      ansible.builtin.fail:
         msg: |
           API call failed with status {{ bootstrap_task.status }}
           Response: {{ bootstrap_task.content }}
@@ -363,7 +366,7 @@
       when: bootstrap_task.status != 204
 
     - name: Registration complete
-      debug:
+      ansible.builtin.debug:
         msg: |
           ✓ Registration successful
 

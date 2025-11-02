@@ -183,6 +183,9 @@ ESSENTIAL_PKGS=(
     curl wget git htop vim net-tools tree rsync screen python3-pip
     fail2ban ufw
     nut-client
+    fwupd
+    isc-dhcp-client
+    libnss-myhostname
 )
 
 apt-get install -y "${ESSENTIAL_PKGS[@]}"

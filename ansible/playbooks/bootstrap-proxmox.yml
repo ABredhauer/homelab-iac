@@ -207,6 +207,14 @@
           192.168.1.230 pve-node1.homelab.local pve-node1
           192.168.1.232 pve-node2.homelab.local pve-node2
 
+    # ===== REBOOT to apply new hostname =====
+    
+    - name: Reboot the host to apply new hostname
+      ansible.builtin.reboot:
+        msg: "Rebooting to apply new hostname"
+        reboot_timeout: 120
+        test_command: hostnamectl | grep "{{ target_hostname }}"
+
     # ===== REPOSITORY CONFIGURATION =====
 
     # ===== PACKAGE MANAGEMENT =====

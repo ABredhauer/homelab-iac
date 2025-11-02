@@ -10,6 +10,7 @@
   remote_user: root  # Connect as root initially
 
   vars:
+    ansible_user: root
     ansible_ssh_pass: "{{ PROXMOX_ROOT_PASSWORD }}"  # From Variable Group
     ansible_ssh_common_args: '-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null'
     semaphore_ssh_public_key: "{{ SEMAPHORE_SSH_PUBLIC_KEY }}"

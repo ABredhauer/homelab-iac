@@ -18,12 +18,7 @@ BOOTSTRAP_TEMPLATE_ID="1"
 GITHUB_USER="ABredhauer"
 SSH_KEY_DIR="/root/.ssh"
 
-# Step 1: Install absolute essentials for Ansible connectivity
-echo "[1/3] Installing essential packages..."
-apt-get update -qq
-apt-get install -y sudo curl jq python3 openssh-server
-
-# Step 2: Configure SSH for Ansible access
+# Step 1: Configure SSH for Ansible access
 echo "[2/3] Configuring SSH access..."
 mkdir -p "${SSH_KEY_DIR}"
 chmod 700 "${SSH_KEY_DIR}"
@@ -66,7 +61,7 @@ else
     echo "⚠️ SSH reload failed but continuing..."
 fi
 
-# Step 3: Register with Semaphore
+# Step 2: Register with Semaphore
 echo "[3/3] Registering with Semaphore..."
 
 # Get host details
@@ -81,16 +76,14 @@ echo "  Interface: $ACTIVE_IF"
 echo "  MAC: $PRIMARY_MAC"
 
 # Build JSON payload for registration (using proper jq syntax)
-ENV_JSON=$(jq -n \
-  --arg mac "$PRIMARY_MAC" \
-  --arg ip "$HOST_IP" \
-  --arg template "$BOOTSTRAP_TEMPLATE_ID" \
-  '{primary_mac: $mac, temp_ip: $ip, bootstrap_template_id: $template}')
+ENV_JSON="{\"primary_mac\": \"${PRIMARY_MAC}\", \"temp_ip\": \"${HOST_IP}\", \"bootstrap_template_id\": \"${BOOTSTRAP_TEMPLATE_ID}\"}"
 
 echo "  Environment JSON: $ENV_JSON"
 
 # Escape for Semaphore environment parameter
-ENV_ESCAPED=$(echo "$ENV_JSON" | jq -c . | sed 's/"/\\"/g')
+ENV_ESCAPED=$(echo "$ENV_JSON" | sed 's/"/\\"/g')
+
+echo "  Escaped Environment JSON: $ENV_ESCAPED"
 
 # Call Semaphore registration API
 echo "  Calling Semaphore registration API..."

@@ -17,6 +17,68 @@
       ansible.builtin.debug:
         msg: "Creating ansible user on {{ inventory_hostname }} (connecting as root)"
 
+    # Cleanup the apt repos before doing anything
+    - name: Disable Proxmox enterprise repositories (deb822 format)
+      ansible.builtin.replace:
+        path: "{{ item }}"
+        regexp: '^(Types:|URIs:|Suites:|Components:|Signed-By:)'
+        replace: '# \1'
+      with_fileglob:
+        - /etc/apt/sources.list.d/*.sources
+      when: "'enterprise.proxmox.com' in lookup('file', item, errors='ignore')"
+      register: replace_result
+      failed_when: replace_result is failed
+
+    - name: Find legacy .list files
+      ansible.builtin.find:
+        paths: /etc/apt/sources.list.d
+        patterns: '*.list'
+        file_type: file
+      register: legacy_list_files
+      ignore_errors: true
+
+    - name: Disable enterprise repositories (legacy .list format)
+      ansible.builtin.shell: |
+        file="{{ item.path }}"
+        if [ -f "$file" ] && grep -q "enterprise.proxmox.com" "$file"; then
+          mv "$file" "$file.disabled" && echo "moved: $file"
+        fi
+      args:
+        executable: /bin/bash
+      loop: "{{ legacy_list_files.files | default([]) }}"
+      loop_control:
+        label: "{{ item.path }}"
+      register: mv_results
+      changed_when: "'moved:' in result.stdout"
+
+    - name: Configure Proxmox no-subscription repository
+      ansible.builtin.copy:
+        dest: /etc/apt/sources.list.d/proxmox.sources
+        content: |
+          Types: deb
+          URIs: http://download.proxmox.com/debian/pve
+          Suites: trixie
+          Components: pve-no-subscription
+          Signed-By: /usr/share/keyrings/proxmox-archive-keyring.gpg
+        mode: '0644'
+
+    # ===== NOW SAFE TO RUN APT =====
+    - name: Update apt cache (enterprise repos now disabled)
+      ansible.builtin.apt:
+        update_cache: true
+      register: apt_update
+      retries: 3
+      delay: 5
+      until: apt_update is success
+
+    - name: Install essential packages
+      ansible.builtin.apt:
+        name:
+          - sudo
+          - python3
+          - python3-apt
+        state: present
+
     - name: Create ansible user
       ansible.builtin.user:
         name: ansible
@@ -135,49 +197,6 @@
           192.168.1.232 pve-node2.homelab.local pve-node2
 
     # ===== REPOSITORY CONFIGURATION =====
-    - name: Disable Proxmox enterprise repositories (deb822 format)
-      ansible.builtin.replace:
-        path: "{{ item }}"
-        regexp: '^(Types:|URIs:|Suites:|Components:|Signed-By:)'
-        replace: '# \1'
-      with_fileglob:
-        - /etc/apt/sources.list.d/*.sources
-      when: "'enterprise.proxmox.com' in lookup('file', item, errors='ignore')"
-      register: replace_result
-      failed_when: replace_result is failed
-
-    - name: Find legacy .list files
-      ansible.builtin.find:
-        paths: /etc/apt/sources.list.d
-        patterns: '*.list'
-        file_type: file
-      register: legacy_list_files
-      ignore_errors: true
-
-    - name: Disable enterprise repositories (legacy .list format)
-      ansible.builtin.shell: |
-        file="{{ item.path }}"
-        if [ -f "$file" ] && grep -q "enterprise.proxmox.com" "$file"; then
-          mv "$file" "$file.disabled" && echo "moved: $file"
-        fi
-      args:
-        executable: /bin/bash
-      loop: "{{ legacy_list_files.files | default([]) }}"
-      loop_control:
-        label: "{{ item.path }}"
-      register: mv_results
-      changed_when: "'moved:' in result.stdout"
-
-    - name: Configure Proxmox no-subscription repository
-      ansible.builtin.copy:
-        dest: /etc/apt/sources.list.d/proxmox.sources
-        content: |
-          Types: deb
-          URIs: http://download.proxmox.com/debian/pve
-          Suites: trixie
-          Components: pve-no-subscription
-          Signed-By: /usr/share/keyrings/proxmox-archive-keyring.gpg
-        mode: '0644'
 
     - name: Configure Ceph no-subscription repository
       ansible.builtin.copy:

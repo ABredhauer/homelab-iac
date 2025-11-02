@@ -123,7 +123,7 @@
         regexp: '^#?PermitRootLogin'
         line: 'PermitRootLogin prohibit-password'
         state: present
-      notify: reload sshd
+      notify: Reload sshd
 
     - name: Disable password authentication entirely
       ansible.builtin.lineinfile:
@@ -131,7 +131,7 @@
         regexp: '^#?PasswordAuthentication'
         line: 'PasswordAuthentication no'
         state: present
-      notify: reload sshd
+      notify: Reload sshd
 
   handlers:
     - name: Reload sshd

@@ -1,264 +1,139 @@
 #!/bin/bash
+# Minimal first-boot script - just enable Ansible access and call Semaphore
 
-# ----------- Configuration Variables -----------
-LOG_FILE="/var/log/homelab-bootstrap.log"
-GITHUB_USER="ABredhauer"
-REPO_URL="https://github.com/ABredhauer/homelab-iac.git"
-REPO_DIR="/opt/homelab-iac"
-
-# Static node info (update with actual MACs and IPs)
-NODE_MAC_1="6c:3c:8c:43:10:e9"
-NODE_NAME_1="pve-node1"
-NODE_ID_1="1"
-NODE_IP_1="192.168.1.230"
-
-NODE_MAC_2="6c:3c:8c:2f:43:6a"
-NODE_NAME_2="pve-node2"
-NODE_ID_2="2"
-NODE_IP_2="192.168.1.232"
-
-DEFAULT_NODE_NAME="pve-unknown"
-DEFAULT_NODE_ID="99"
-
-# ----------- End Variables -----------
-
+LOG_FILE="/var/log/homelab-first-boot.log"
 set -euo pipefail
 exec > >(tee -a "$LOG_FILE") 2>&1
 
 echo "=================================================="
-echo "Starting secure bootstrap at $(date)"
-echo "Node: $(hostname)"
-echo "IP: $(hostname -I | awk '{print $1}')"
+echo "First-boot initialization: $(date)"
 echo "=================================================="
 
-# Step 1: Setup SSH key authentication
-echo "Step 1: Configuring SSH key authentication..."
-mkdir -p /root/.ssh
-chmod 700 /root/.ssh
+# Semaphore Configuration
+SEMAPHORE_URL="http://192.168.1.196:3000"
+SEMAPHORE_API_TOKEN="nrpjao4qhnegcri4ns5sxvt4m07uwt-it4jm9pqj2-o="
+SEMAPHORE_PROJECT_ID="1"
+REGISTER_TEMPLATE_ID="3"
+BOOTSTRAP_TEMPLATE_ID="1"
+GITHUB_USER="ABredhauer"
+SSH_KEY_DIR="/root/.ssh"
 
-# Configure SSH keys for Proxmox VE
-echo "Setting up SSH keys for Proxmox VE..."
-mkdir -p /etc/pve/priv
+# Step 1: Install absolute essentials for Ansible connectivity
+echo "[1/3] Installing essential packages..."
+apt-get update -qq
+apt-get install -y sudo curl jq python3 openssh-server
 
-# Download keys to Proxmox's managed location
-if curl -fsSL --connect-timeout 10 --max-time 30 "https://github.com/${GITHUB_USER}.keys" > /etc/pve/priv/authorized_keys; then
-    chmod 600 /etc/pve/priv/authorized_keys
-#    chown root /etc/pve/priv/authorized_keys
+# Step 2: Configure SSH for Ansible access
+echo "[2/3] Configuring SSH access..."
+mkdir -p "${SSH_KEY_DIR}"
+chmod 700 "${SSH_KEY_DIR}"
+
+# Fetch SSH keys from GitHub
+if curl -fsSL --connect-timeout 10 --max-time 30 "https://github.com/${GITHUB_USER}.keys" > "${SSH_KEY_DIR}/authorized_keys"; then
+    chmod 600 "${SSH_KEY_DIR}/authorized_keys"
     
-    if [[ -s /etc/pve/priv/authorized_keys ]]; then
-        keys_count=$(wc -l < /etc/pve/priv/authorized_keys)
-        echo "✓ Found $keys_count SSH key(s) in Proxmox location"
-        DISABLE_PASSWORD_AUTH=true
+    # Verify keys were actually downloaded
+    if [[ -s "${SSH_KEY_DIR}/authorized_keys" ]]; then
+        keys_count=$(wc -l < "${SSH_KEY_DIR}/authorized_keys")
+        echo "✓ SSH keys configured (${keys_count} key(s))"
     else
-        echo "⚠️ Warning: No SSH keys found"
-        KEEP_PASSWORD_AUTH=true
+        echo "✗ SSH keys file is empty"
+        exit 1
     fi
 else
-    echo "⚠️ Failed to fetch GitHub keys"
-    KEEP_PASSWORD_AUTH=true
+    echo "✗ Failed to fetch SSH keys - aborting"
+    exit 1
 fi
 
-# Proxmox will create the symlink automatically, so we don't need to manage /root/.ssh/authorized_keys
+# Enable SSH and configure
+systemctl enable --now ssh
 
-if [[ "${KEEP_PASSWORD_AUTH:-false}" != "true" ]]; then
-    sed -i 's/#PasswordAuthentication yes/PasswordAuthentication no/' /etc/ssh/sshd_config
-    sed -i 's/PasswordAuthentication yes/PasswordAuthentication no/' /etc/ssh/sshd_config
-    # passwd -l root
-else
-    echo "Password authentication remains enabled for emergency access"
-fi
+# Check if settings already exist before appending
+if ! grep -q "# Ansible automation settings" /etc/ssh/sshd_config; then
+    cat >> /etc/ssh/sshd_config <<'EOF'
 
-cat >> /etc/ssh/sshd_config <<EOF
-
-# Additional security settings
+# Ansible automation settings
 PubkeyAuthentication yes
+PasswordAuthentication no
+PermitRootLogin prohibit-password
 MaxAuthTries 3
-ClientAliveInterval 300
-ClientAliveCountMax 2
-PermitEmptyPasswords no
-X11Forwarding no
 EOF
+fi
 
 if systemctl reload sshd; then
-    echo "✓ SSH service reloaded with updated configuration"
+    echo "✓ SSH configured for key-based authentication"
 else
-    echo "⚠️ SSH service reload failed - manual intervention may be required"
+    echo "⚠️ SSH reload failed but continuing..."
 fi
 
-# Step 2: Identify node based on MAC address
-echo "Step 2: Identifying node..."
+# Step 3: Register with Semaphore
+echo "[3/3] Registering with Semaphore..."
+
+# Get host details
+HOSTNAME=$(hostname)
+HOST_IP=$(hostname -I | awk '{print $1}')
 ACTIVE_IF=$(ip route get 8.8.8.8 | awk 'NR==1 {print $5}')
 PRIMARY_MAC=$(ip link show "$ACTIVE_IF" | grep -o '[a-f0-9:]\{17\}' | head -1)
 
-echo "Active interface: $ACTIVE_IF"
-echo "Primary MAC address: $PRIMARY_MAC"
+echo "  Hostname: $HOSTNAME"
+echo "  IP: $HOST_IP"
+echo "  Interface: $ACTIVE_IF"
+echo "  MAC: $PRIMARY_MAC"
 
-case "$PRIMARY_MAC" in
-    "$NODE_MAC_1")
-        NODE_NAME="$NODE_NAME_1"
-        NODE_ID="$NODE_ID_1"
-        NODE_IP="$NODE_IP_1"
-        ;;
-    "$NODE_MAC_2")
-        NODE_NAME="$NODE_NAME_2"
-        NODE_ID="$NODE_ID_2"
-        NODE_IP="$NODE_IP_2"
-        ;;
-    *)
-        NODE_NAME="${DEFAULT_NODE_NAME}-$(date +%s)"
-        NODE_ID="$DEFAULT_NODE_ID"
-        NODE_IP=""
-        echo "⚠️ Unknown MAC address; using fallback node name: $NODE_NAME"
-        ;;
-esac
+# Build JSON payload for registration (using proper jq syntax)
+ENV_JSON=$(jq -n \
+  --arg mac "$PRIMARY_MAC" \
+  --arg ip "$HOST_IP" \
+  --arg template "$BOOTSTRAP_TEMPLATE_ID" \
+  '{primary_mac: $mac, temp_ip: $ip, bootstrap_template_id: $template}')
 
-echo " ✓ Node identified as: $NODE_NAME (ID: $NODE_ID)"
+echo "  Environment JSON: $ENV_JSON"
 
-# Step 3: Update system identity (hostname and hosts file)
-echo "Step 3: Updating system identity..."
-hostnamectl set-hostname "$NODE_NAME"
+# Escape for Semaphore environment parameter
+ENV_ESCAPED=$(echo "$ENV_JSON" | jq -c . | sed 's/"/\\"/g')
 
-cp /etc/hosts "/etc/hosts.backup.$(date +%Y%m%d-%H%M%S)"
-sed -i '/pve-temp/d' /etc/hosts
-echo "127.0.1.1 $NODE_NAME.homelab.local $NODE_NAME" >> /etc/hosts
+# Call Semaphore registration API
+echo "  Calling Semaphore registration API..."
+REG_RESPONSE=$(curl -s -w "\nHTTP_STATUS:%{http_code}" -X POST \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer ${SEMAPHORE_API_TOKEN}" \
+  -d "{
+    \"template_id\": ${REGISTER_TEMPLATE_ID},
+    \"message\": \"Register MAC ${PRIMARY_MAC}\",
+    \"environment\": \"${ENV_ESCAPED}\"
+  }" \
+  "${SEMAPHORE_URL}/api/project/${SEMAPHORE_PROJECT_ID}/tasks")
 
-cat >> /etc/hosts <<EOF
-# Proxmox cluster nodes (uncomment as cluster forms)
-$NODE_IP_1 $NODE_NAME_1.homelab.local $NODE_NAME_1
-$NODE_IP_2 $NODE_NAME_2.homelab.local $NODE_NAME_2
-EOF
+# Parse response
+HTTP_STATUS=$(echo "$REG_RESPONSE" | grep "HTTP_STATUS:" | cut -d':' -f2)
+RESPONSE_BODY=$(echo "$REG_RESPONSE" | sed '/HTTP_STATUS:/d')
 
-echo "✓ Hostname set to: $NODE_NAME.homelab.local"
-
-# Step 4: Configure repositories and system packages
-echo "Step 4: Configuring repositories and system packages..."
-
-# Disable all enterprise repositories (both .list and .sources formats)
-echo "Disabling enterprise repositories..."
-for file in /etc/apt/sources.list.d/*.sources; do
-    if [[ -f "$file" ]] && grep -q "enterprise.proxmox.com" "$file"; then
-        # Comment out entire deb822 blocks properly
-        sed -i 's/^Types:/# Types:/' "$file"
-        sed -i 's/^URIs:/# URIs:/' "$file" 
-        sed -i 's/^Suites:/# Suites:/' "$file"
-        sed -i 's/^Components:/# Components:/' "$file"
-        sed -i 's/^Signed-By:/# Signed-By:/' "$file"
-        echo "Disabled enterprise repo: $(basename "$file")"
-    fi
-done
-
-for file in /etc/apt/sources.list.d/*.list; do
-    if [[ -f "$file" ]] && grep -q "enterprise.proxmox.com" "$file"; then
-        mv "$file" "$file.disabled"
-        echo "Disabled enterprise repo: $(basename "$file")"
-    fi
-done
-
-# Create correct Proxmox VE no-subscription repository (trixie)
-echo "Setting up Proxmox VE no-subscription repository..."
-cat > /etc/apt/sources.list.d/proxmox.sources << 'EOF'
-Types: deb
-URIs: http://download.proxmox.com/debian/pve
-Suites: trixie
-Components: pve-no-subscription
-Signed-By: /usr/share/keyrings/proxmox-archive-keyring.gpg
-EOF
-
-# Create Ceph no-subscription repository 
-echo "Setting up Ceph no-subscription repository..."
-cat > /etc/apt/sources.list.d/ceph.sources << 'EOF'
-Types: deb
-URIs: http://download.proxmox.com/debian/ceph-squid
-Suites: trixie
-Components: no-subscription
-Signed-By: /usr/share/keyrings/proxmox-archive-keyring.gpg
-EOF
-
-echo "Repository configuration completed"
-
-# Update package lists with new repository configuration
-apt-get update
-
-ESSENTIAL_PKGS=(
-    curl wget git htop vim net-tools tree rsync screen python3-pip
-    fail2ban ufw
-    nut-client
-    fwupd
-    isc-dhcp-client
-    libnss-myhostname
-)
-
-apt-get install -y "${ESSENTIAL_PKGS[@]}"
-
-# Step 5: Remove subscription nag
-echo "Step 5: Removing Proxmox subscription nag from Web UI..."
-JS="/usr/share/javascript/proxmox-widget-toolkit/proxmoxlib.js"
-if [ -f "$JS" ] && ! grep -q NoMoreNagging "$JS"; then
-  sed -i -e "/data\.status/ s/!//" -e "/data\.status/ s/active/NoMoreNagging/" "$JS"
-  echo "Subscription nag suppressed"
+if [ "$HTTP_STATUS" = "201" ]; then
+    REG_TASK_ID=$(echo "$RESPONSE_BODY" | grep -o '"id":[0-9]*' | head -1 | cut -d':' -f2)
+    echo "  ✓ Registration started (Task ID: ${REG_TASK_ID})"
+    echo "  ✓ View at: ${SEMAPHORE_URL}/project/${SEMAPHORE_PROJECT_ID}/history?t=${REG_TASK_ID}"
 else
-  echo "Subscription nag patch not required"
+    echo "  ✗ Registration failed (HTTP ${HTTP_STATUS})"
+    echo "  Response: ${RESPONSE_BODY}"
+    exit 1
 fi
 
-# Step 6: Enable HA-related services
-echo "Step 6: Enabling high availability services..."
-systemctl enable --now pve-ha-lrm pve-ha-crm corosync
-
-# Step 7: Clone or update infrastructure repository
-echo "Step 7: Setting up infrastructure automation..."
-if [ -d "$REPO_DIR" ]; then
-    cd "$REPO_DIR"
-    if git pull; then
-        echo "✓ Repository updated"
-    else
-        echo "⚠️ Failed to update repository"
-    fi
-else
-    if git clone "$REPO_URL" "$REPO_DIR"; then
-        echo "✓ Repository cloned"
-    else
-        echo "⚠️ Failed to clone repository"
-    fi
-fi
-
-# Step 8: Install Ansible
-echo "Step 8: Installing Ansible..."
-if apt-get install -y ansible; then
-    echo "✓ Ansible installed via apt"
-    ANSIBLE_AVAILABLE=true
-else
-    echo "⚠️  Ansible installation failed"
-    ANSIBLE_AVAILABLE=false
-fi
-
-# Step 9: Run Ansible bootstrap playbook if available
-echo "Step 9: Running Ansible bootstrap..."
-if [[ -f "$REPO_DIR/ansible/playbooks/bootstrap.yml" ]]; then
-    cd "$REPO_DIR"
-    export ANSIBLE_HOST_KEY_CHECKING=False
-    ansible-playbook -i localhost, -c local -e "node_hostname=$NODE_NAME" -e "node_id=$NODE_ID" -e "primary_mac=$PRIMARY_MAC" ansible/playbooks/bootstrap.yml
-else
-    echo "⚠️ Bootstrap playbook not found; skipping Ansible run"
-fi
-
-# Step 10: System full upgrade and reboot
-echo "Step 10: Performing full system upgrade..."
-apt-get update && apt-get -y dist-upgrade
-
-echo "Rebooting system now to complete updates..."
-sleep 3
-reboot
-
-# Mark completion (won't be reached due to reboot)
-echo "Step 11: Finalizing bootstrap..." 
-cat > /opt/homelab-bootstrap-complete <<EOF
-Bootstrap completed: $(date)
-Node name: $NODE_NAME
-Node ID: $NODE_ID
-MAC address: $PRIMARY_MAC
-IP address: $(hostname -I | awk '{print $1}')
-SSH keys: $(if [[ "${KEEP_PASSWORD_AUTH:-false}" != "true" ]]; then echo "enabled"; else echo "password fallback"; fi)
-Repository: $REPO_URL
+# Create completion marker with details
+cat > /opt/first-boot-complete <<EOF
+First-boot completed: $(date)
+Hostname: ${HOSTNAME}
+IP: ${HOST_IP}
+MAC: ${PRIMARY_MAC}
+Registration Task: ${REG_TASK_ID}
+Semaphore URL: ${SEMAPHORE_URL}
 EOF
 
-echo "$NODE_NAME" > /opt/homelab-node-identity
+chmod 644 /opt/first-boot-complete
+
+# Mark first-boot complete
+echo ""
+echo "=================================================="
+echo "First-boot complete - Ansible will handle the rest"
+echo "Monitor progress: ${SEMAPHORE_URL}"
+echo "Completion details saved to /opt/first-boot-complete"
+echo "=================================================="

@@ -363,17 +363,10 @@
             "limit": "{{ target_hostname }}",
             "params": {
               "debug": false,
-              "dry_run": true,
+              "dry_run": false,
               "diff": false
             }
           }
-        # template_id: "{{ bootstrap_template_id | int }}"
-        # message: "Bootstrap {{ target_hostname }}"
-        # limit: "{{ target_hostname }}"
-        # params:
-        #   debug: false
-        #   dry_run: true
-        #   diff: false
         timeout: "{{ semaphore_api_timeout }}"
         status_code: 201
         return_content: true

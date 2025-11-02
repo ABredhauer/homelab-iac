@@ -1,12 +1,78 @@
 ---
 # ansible/playbooks/bootstrap-proxmox.yml
-# Bootstrap Proxmox host - sets hostname, configures network, installs packages
+# Bootstrap Proxmox host - create ansible user, then configure system
 
+# ===== PLAY 1: Create Ansible User (as root) =====
+- name: Create Ansible Automation User
+  hosts: proxmox_nodes
+  become: true
+  gather_facts: false
+  remote_user: root  # Connect as root initially
+
+  vars:
+    semaphore_ssh_public_key: "{{ SEMAPHORE_SSH_PUBLIC_KEY }}"
+
+  tasks:
+    - name: Display initial connection info
+      ansible.builtin.debug:
+        msg: "Creating ansible user on {{ inventory_hostname }} (connecting as root)"
+
+    - name: Create ansible user
+      ansible.builtin.user:
+        name: ansible
+        comment: "Ansible Automation User"
+        shell: /bin/bash
+        create_home: true
+        groups: sudo
+        append: true
+        state: present
+
+    - name: Add ansible user to sudoers with NOPASSWD
+      ansible.builtin.copy:
+        dest: /etc/sudoers.d/ansible
+        content: |
+          # Ansible automation user - passwordless sudo
+          ansible ALL=(ALL) NOPASSWD: ALL
+        mode: '0440'
+        validate: 'visudo -cf %s'
+
+    - name: Create .ssh directory for ansible user
+      ansible.builtin.file:
+        path: /home/ansible/.ssh
+        state: directory
+        owner: ansible
+        group: ansible
+        mode: '0700'
+
+    - name: Add Semaphore SSH public key to ansible user
+      ansible.posix.authorized_key:
+        user: ansible
+        state: present
+        key: "{{ semaphore_ssh_public_key }}"
+        comment: "Semaphore Automation Key"
+
+    - name: Also add GitHub keys to ansible user (for manual access)
+      ansible.posix.authorized_key:
+        user: ansible
+        state: present
+        key: https://github.com/ABredhauer.keys
+
+    - name: Verify ansible user can sudo
+      ansible.builtin.command: sudo -n -l -U ansible
+      register: sudo_check
+      changed_when: false
+
+    - name: Display user creation complete
+      ansible.builtin.debug:
+        msg: "✓ Ansible user created and configured"
+
+# ===== PLAY 2: Bootstrap System (as ansible user) =====
 - name: Bootstrap Proxmox Host
   hosts: proxmox_nodes
   become: true
   gather_facts: true  # Required for ansible_date_time and system facts
-  
+  remote_user: ansible  # Now connect as ansible user
+
   vars:
     # Get config from inventory
     target_hostname: "{{ inventory_hostname }}"
@@ -15,16 +81,16 @@
     primary_mac: "{{ hostvars[inventory_hostname].primary_mac }}"
     network_config: "{{ hostvars[inventory_hostname].network_interfaces }}"
     target_ip: "{{ network_config.primary.static_ip }}"
-    
+
     # Semaphore API (from Variable Group)
     semaphore_url: "{{ SEMAPHORE_WEB_ROOT }}"
     semaphore_project_id: "{{ SEMAPHORE_PROJECT_ID }}"
     semaphore_inventory_id: "{{ SEMAPHORE_INVENTORY_ID }}"
     semaphore_api_token: "{{ SEMAPHORE_API_TOKEN }}"
-  
+
   tasks:
     - name: Display bootstrap information
-      debug:
+      ansible.builtin.debug:
         msg: |
           Bootstrapping Proxmox Host
           ==========================
@@ -34,62 +100,76 @@
           Current IP: {{ ansible_default_ipv4.address }}
           Target IP: {{ target_ip }}
           Primary MAC: {{ primary_mac }}
-    
+
     # ===== HOSTNAME CONFIGURATION =====
     - name: Set system hostname
-      hostname:
+      ansible.builtin.hostname:
         name: "{{ target_hostname }}"
-    
+
     - name: Backup /etc/hosts
-      copy:
+      ansible.builtin.copy:
         src: /etc/hosts
         dest: "/etc/hosts.backup.{{ ansible_date_time.epoch }}"
-        remote_src: yes
-    
+        mode: preserve
+        remote_src: true
+
     - name: Configure /etc/hosts - Remove temp entries
-      lineinfile:
+      ansible.builtin.lineinfile:
         path: /etc/hosts
         regexp: ".*pve-temp.*"
         state: absent
-    
+
     - name: Configure /etc/hosts - localhost entry
-      lineinfile:
+      ansible.builtin.lineinfile:
         path: /etc/hosts
         line: "127.0.1.1 {{ target_hostname }}.homelab.local {{ target_hostname }}"
         regexp: "^127\\.0\\.1\\.1"
-    
+
     - name: Configure /etc/hosts - cluster nodes
-      blockinfile:
+      ansible.builtin.blockinfile:
         path: /etc/hosts
         marker: "# {mark} ANSIBLE MANAGED - Proxmox Cluster Nodes"
         block: |
           # Proxmox cluster nodes
           192.168.1.230 pve-node1.homelab.local pve-node1
           192.168.1.232 pve-node2.homelab.local pve-node2
-    
+
     # ===== REPOSITORY CONFIGURATION =====
     - name: Disable Proxmox enterprise repositories (deb822 format)
-      replace:
+      ansible.builtin.replace:
         path: "{{ item }}"
         regexp: '^(Types:|URIs:|Suites:|Components:|Signed-By:)'
         replace: '# \1'
       with_fileglob:
         - /etc/apt/sources.list.d/*.sources
       when: "'enterprise.proxmox.com' in lookup('file', item, errors='ignore')"
-      ignore_errors: yes
-    
+      register: replace_result
+      failed_when: replace_result is failed
+
+    - name: Find legacy .list files
+      ansible.builtin.find:
+        paths: /etc/apt/sources.list.d
+        patterns: '*.list'
+        file_type: file
+      register: legacy_list_files
+      ignore_errors: true
+
     - name: Disable enterprise repositories (legacy .list format)
-      shell: |
-        for file in /etc/apt/sources.list.d/*.list; do
-          if [ -f "$file" ] && grep -q "enterprise.proxmox.com" "$file"; then
-            mv "$file" "$file.disabled"
-          fi
-        done
+      ansible.builtin.shell: |
+        file="{{ item.path }}"
+        if [ -f "$file" ] && grep -q "enterprise.proxmox.com" "$file"; then
+          mv "$file" "$file.disabled" && echo "moved: $file"
+        fi
       args:
         executable: /bin/bash
-    
+      loop: "{{ legacy_list_files.files | default([]) }}"
+      loop_control:
+        label: "{{ item.path }}"
+      register: mv_results
+      changed_when: "'moved:' in result.stdout"
+
     - name: Configure Proxmox no-subscription repository
-      copy:
+      ansible.builtin.copy:
         dest: /etc/apt/sources.list.d/proxmox.sources
         content: |
           Types: deb
@@ -98,9 +178,9 @@
           Components: pve-no-subscription
           Signed-By: /usr/share/keyrings/proxmox-archive-keyring.gpg
         mode: '0644'
-    
+
     - name: Configure Ceph no-subscription repository
-      copy:
+      ansible.builtin.copy:
         dest: /etc/apt/sources.list.d/ceph.sources
         content: |
           Types: deb
@@ -109,17 +189,21 @@
           Components: no-subscription
           Signed-By: /usr/share/keyrings/proxmox-archive-keyring.gpg
         mode: '0644'
-    
+
     # ===== PACKAGE MANAGEMENT =====
     - name: Update apt cache
-      apt:
-        update_cache: yes
+      ansible.builtin.apt:
+        update_cache: true
         cache_valid_time: 3600
-    
+
     - name: Install essential packages
-      apt:
+      ansible.builtin.apt:
         name:
+          - sudo
           - curl
+          - jq
+          - python3
+          - openssh-server
           - wget
           - git
           - htop
@@ -137,25 +221,29 @@
           - isc-dhcp-client
           - libnss-myhostname
         state: present
-    
+
     - name: Perform full system upgrade
-      apt:
+      ansible.builtin.apt:
         upgrade: dist
-        autoremove: yes
-        autoclean: yes
-    
+        autoremove: true
+        autoclean: true
+
     # ===== PROXMOX CONFIGURATION =====
     - name: Remove subscription nag
-      replace:
+      ansible.builtin.replace:
         path: /usr/share/javascript/proxmox-widget-toolkit/proxmoxlib.js
         regexp: '(data\.status !== .active.)'
         replace: 'false'
-      ignore_errors: yes
-    
+      register: remove_subscription_result
+      failed_when: >
+        remove_subscription_result is failed and
+        ('No such file' not in (remove_subscription_result.msg | default('')) and
+         'No such file or directory' not in (remove_subscription_result.msg | default('')))
+
     - name: Enable Proxmox services
-      systemd:
+      ansible.builtin.systemd:
         name: "{{ item }}"
-        enabled: yes
+        enabled: true
         state: started
       loop:
         - pveproxy
@@ -164,15 +252,14 @@
         - pve-ha-lrm
         - pve-ha-crm
         - corosync
-      ignore_errors: yes
-    
+
     # ===== SYSTEM CONFIGURATION =====
     - name: Configure timezone
-      timezone:
+      community.general.timezone:
         name: Australia/Brisbane
-    
+
     - name: Configure NTP
-      copy:
+      ansible.builtin.copy:
         dest: /etc/systemd/timesyncd.conf
         content: |
           [Time]
@@ -180,10 +267,10 @@
           FallbackNTP=ntp.ubuntu.com
         mode: '0644'
       notify: restart timesyncd
-    
+
     # ===== COMPLETION MARKERS =====
     - name: Create bootstrap completion file
-      copy:
+      ansible.builtin.copy:
         dest: /opt/ansible-bootstrap-complete
         content: |
           Ansible Bootstrap Complete
@@ -196,34 +283,34 @@
           Bootstrapped: {{ ansible_date_time.iso8601 }}
           By: Ansible Semaphore
         mode: '0644'
-    
+
     - name: Create node identity file
-      copy:
+      ansible.builtin.copy:
         dest: /opt/homelab-node-identity
         content: "{{ target_hostname }}"
         mode: '0644'
-    
+
     # ===== UPDATE LIFECYCLE STATE =====
     - name: Fetch current inventory from Semaphore
-      uri:
+      ansible.builtin.uri:
         url: "{{ semaphore_url }}/api/project/{{ semaphore_project_id }}/inventory/{{ semaphore_inventory_id }}"
         method: GET
         headers:
           Authorization: "Bearer {{ semaphore_api_token }}"
-        return_content: yes
+        return_content: true
         status_code: 200
       register: inventory_fetch
       delegate_to: localhost
-    
+
     - name: Parse inventory
-      set_fact:
+      ansible.builtin.set_fact:
         current_inv: "{{ inventory_fetch.json.inventory | from_yaml }}"
         inv_meta: "{{ inventory_fetch.json }}"
       when: not ansible_check_mode
       delegate_to: localhost
-    
+
     - name: Update host lifecycle state to bootstrapped
-      set_fact:
+      ansible.builtin.set_fact:
         updated_inv: >-
           {{
             current_inv | combine({
@@ -244,9 +331,9 @@
           }}
       when: not ansible_check_mode
       delegate_to: localhost
-    
+
     - name: Save updated inventory to Semaphore
-      uri:
+      ansible.builtin.uri:
         url: "{{ semaphore_url }}/api/project/{{ semaphore_project_id }}/inventory/{{ semaphore_inventory_id }}"
         method: PUT
         headers:
@@ -257,9 +344,9 @@
         status_code: 204
       when: not ansible_check_mode
       delegate_to: localhost
-    
+
     - name: Display completion message
-      debug:
+      ansible.builtin.debug:
         msg: |
           ✓ Bootstrap complete for {{ target_hostname }}
           ✓ Hostname configured
@@ -267,12 +354,12 @@
           ✓ System packages upgraded
           ✓ Proxmox services enabled
           ✓ Lifecycle state: bootstrapped
-          
+
           Next: Configure network interfaces and join cluster
-  
+
   handlers:
-    - name: restart timesyncd
-      systemd:
+    - name: Restart timesyncd
+      ansible.builtin.systemd:
         name: systemd-timesyncd
         state: restarted
-        enabled: yes
+        enabled: true

@@ -44,16 +44,16 @@ fi
 systemctl enable --now ssh
 
 # Check if settings already exist before appending
-if ! grep -q "# Ansible automation settings" /etc/ssh/sshd_config; then
-    cat >> /etc/ssh/sshd_config <<'EOF'
+# if ! grep -q "# Ansible automation settings" /etc/ssh/sshd_config; then
+#     cat >> /etc/ssh/sshd_config <<'EOF'
 
-# Ansible automation settings
-PubkeyAuthentication yes
-PasswordAuthentication no
-PermitRootLogin prohibit-password
-MaxAuthTries 3
-EOF
-fi
+# # Ansible automation settings
+# PubkeyAuthentication yes
+# PasswordAuthentication no
+# PermitRootLogin prohibit-password
+# MaxAuthTries 3
+# EOF
+# fi
 
 if systemctl reload sshd; then
     echo "✓ SSH configured for key-based authentication"

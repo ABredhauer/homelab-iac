@@ -211,6 +211,7 @@
         headers:
           Authorization: "Bearer {{ semaphore_api_token }}"
         return_content: yes
+        status_code: 200
       register: inventory_fetch
       delegate_to: localhost
     
@@ -218,6 +219,7 @@
       set_fact:
         current_inv: "{{ inventory_fetch.json.inventory | from_yaml }}"
         inv_meta: "{{ inventory_fetch.json }}"
+      when: not ansible_check_mode
       delegate_to: localhost
     
     - name: Update host lifecycle state to bootstrapped
@@ -240,6 +242,7 @@
               }
             }, recursive=True)
           }}
+      when: not ansible_check_mode
       delegate_to: localhost
     
     - name: Save updated inventory to Semaphore
@@ -252,6 +255,7 @@
         body_format: json
         body: "{{ inv_meta | combine({'inventory': updated_inv | to_nice_yaml}) }}"
         status_code: 204
+      when: not ansible_check_mode
       delegate_to: localhost
     
     - name: Display completion message

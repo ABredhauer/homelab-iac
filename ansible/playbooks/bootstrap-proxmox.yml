@@ -16,122 +16,150 @@
     semaphore_ssh_public_key: "{{ SEMAPHORE_SSH_PUBLIC_KEY }}"
 
   tasks:
-    - name: Display initial connection info
-      ansible.builtin.debug:
-        msg: "Creating ansible user on {{ inventory_hostname }} (connecting as root)"
-
-    # Cleanup the apt repos before doing anything
-    - name: Disable Proxmox enterprise repositories (deb822 format)
-      ansible.builtin.deb822_repository:
-        name: pve-enterprise
-        state: absent
-
-    - name: Disable the Ceph enterprise repository (deb822 format)
-      ansible.builtin.deb822_repository:
-        name: ceph
-        state: absent
-
-    - name: Configure Proxmox no-subscription repository
-      ansible.builtin.deb822_repository:
-        name: proxmox
-        types: deb
-        state: present
-        uris: http://download.proxmox.com/debian/pve
-        suites: trixie
-        components: pve-no-subscription
-        signed_by: /usr/share/keyrings/proxmox-archive-keyring.gpg
-
-    - name: Configure the Ceph no-subscription repository (deb822 format)
-      ansible.builtin.deb822_repository:
-        name: ceph
-        types: deb
-        state: present
-        uris: http://download.proxmox.com/debian/ceph-squid
-        suites: trixie
-        components: no-subscription
-        signed_by: /usr/share/keyrings/proxmox-archive-keyring.gpg
-
-    # ===== NOW SAFE TO RUN APT =====
-    - name: Update apt cache (enterprise repos now disabled)
-      ansible.builtin.apt:
-        update_cache: true
-      register: apt_update
-      retries: 3
-      delay: 5
-      until: apt_update is success
-
-    - name: Install essential packages
-      ansible.builtin.apt:
-        name:
-          - sudo
-          - python3
-          - python3-apt
-        state: present
-
-    - name: Create ansible user
-      ansible.builtin.user:
-        name: ansible
-        comment: "Ansible Automation User"
-        shell: /bin/bash
-        create_home: true
-        groups: sudo
-        append: true
-        state: present
-
-    - name: Add ansible user to sudoers with NOPASSWD
-      ansible.builtin.copy:
-        dest: /etc/sudoers.d/ansible
-        content: |
-          # Ansible automation user - passwordless sudo
-          ansible ALL=(ALL) NOPASSWD: ALL
-        mode: '0440'
-        validate: 'visudo -cf %s'
-
-    - name: Create .ssh directory for ansible user
-      ansible.builtin.file:
-        path: /home/ansible/.ssh
-        state: directory
-        owner: ansible
-        group: ansible
-        mode: '0700'
-
-    - name: Add Semaphore SSH public key to ansible user
-      ansible.posix.authorized_key:
-        user: ansible
-        state: present
-        key: "{{ semaphore_ssh_public_key }}"
-        comment: "Semaphore Automation Key"
-
-    - name: Also add GitHub keys to ansible user (for manual access)
-      ansible.posix.authorized_key:
-        user: ansible
-        state: present
-        key: https://github.com/ABredhauer.keys
-
-    - name: Verify ansible user can sudo
-      ansible.builtin.command: sudo -n -l -U ansible
-      register: sudo_check
+      # ===== CONNECTION TEST =====
+    - name: Test if root connection is possible
+      ansible.builtin.command: echo "root_connection_works"
+      register: root_connection_test
+      ignore_errors: yes
+      ignore_unreachable: yes
       changed_when: false
-
-    - name: Display user creation complete
+    
+    - name: Display connection test result
       ansible.builtin.debug:
-        msg: "✓ Ansible user created and configured"
+        msg: |
+          Root connection test: {{ 'SUCCESS' if root_connection_test is not failed and root_connection_test is not unreachable else 'FAILED' }}
+          {% if root_connection_test is failed or root_connection_test is unreachable %}
+          This likely means ansible user is already configured.
+          Skipping initial setup tasks.
+          {% endif %}
 
-    - name: Disable root password authentication
-      ansible.builtin.lineinfile:
-        path: /etc/ssh/sshd_config
-        regexp: '^#?PermitRootLogin'
-        line: 'PermitRootLogin prohibit-password'
-        state: present
-      notify: Reload sshd
+    # ===== INITIAL SETUP BLOCK (only if root connection works) =====
+    - name: Perform initial root setup
+      block:
+      when: 
+        - root_connection_test is not failed
+        - root_connection_test is not unreachable
 
-    - name: Disable password authentication entirely
-      ansible.builtin.lineinfile:
-        path: /etc/ssh/sshd_config
-        regexp: '^#?PasswordAuthentication'
-        line: 'PasswordAuthentication no'
-        state: present
-      notify: Reload sshd
+        - name: Verify we're connecting as root
+          ansible.builtin.debug:
+            msg: "Connected as root - performing initial setup"
+
+        - name: Display initial connection info
+          ansible.builtin.debug:
+            msg: "Creating ansible user on {{ inventory_hostname }} (connecting as root)"
+
+        # Cleanup the apt repos before doing anything
+        - name: Disable Proxmox enterprise repositories (deb822 format)
+          ansible.builtin.deb822_repository:
+            name: pve-enterprise
+            state: absent
+
+        - name: Disable the Ceph enterprise repository (deb822 format)
+          ansible.builtin.deb822_repository:
+            name: ceph
+            state: absent
+
+        - name: Configure Proxmox no-subscription repository
+          ansible.builtin.deb822_repository:
+            name: proxmox
+            types: deb
+            state: present
+            uris: http://download.proxmox.com/debian/pve
+            suites: trixie
+            components: pve-no-subscription
+            signed_by: /usr/share/keyrings/proxmox-archive-keyring.gpg
+
+        - name: Configure the Ceph no-subscription repository (deb822 format)
+          ansible.builtin.deb822_repository:
+            name: ceph
+            types: deb
+            state: present
+            uris: http://download.proxmox.com/debian/ceph-squid
+            suites: trixie
+            components: no-subscription
+            signed_by: /usr/share/keyrings/proxmox-archive-keyring.gpg
+
+        # ===== NOW SAFE TO RUN APT =====
+        - name: Update apt cache (enterprise repos now disabled)
+          ansible.builtin.apt:
+            update_cache: true
+          register: apt_update
+          retries: 3
+          delay: 5
+          until: apt_update is success
+
+        - name: Install essential packages
+          ansible.builtin.apt:
+            name:
+              - sudo
+              - python3
+              - python3-apt
+            state: present
+
+        - name: Create ansible user
+          ansible.builtin.user:
+            name: ansible
+            comment: "Ansible Automation User"
+            shell: /bin/bash
+            create_home: true
+            groups: sudo
+            append: true
+            state: present
+
+        - name: Add ansible user to sudoers with NOPASSWD
+          ansible.builtin.copy:
+            dest: /etc/sudoers.d/ansible
+            content: |
+              # Ansible automation user - passwordless sudo
+              ansible ALL=(ALL) NOPASSWD: ALL
+            mode: '0440'
+            validate: 'visudo -cf %s'
+
+        - name: Create .ssh directory for ansible user
+          ansible.builtin.file:
+            path: /home/ansible/.ssh
+            state: directory
+            owner: ansible
+            group: ansible
+            mode: '0700'
+
+        - name: Add Semaphore SSH public key to ansible user
+          ansible.posix.authorized_key:
+            user: ansible
+            state: present
+            key: "{{ semaphore_ssh_public_key }}"
+            comment: "Semaphore Automation Key"
+
+        - name: Also add GitHub keys to ansible user (for manual access)
+          ansible.posix.authorized_key:
+            user: ansible
+            state: present
+            key: https://github.com/ABredhauer.keys
+
+        - name: Verify ansible user can sudo
+          ansible.builtin.command: sudo -n -l -U ansible
+          register: sudo_check
+          changed_when: false
+
+        - name: Display user creation complete
+          ansible.builtin.debug:
+            msg: "✓ Ansible user created and configured"
+
+        - name: Disable root password authentication
+          ansible.builtin.lineinfile:
+            path: /etc/ssh/sshd_config
+            regexp: '^#?PermitRootLogin'
+            line: 'PermitRootLogin prohibit-password'
+            state: present
+          notify: Reload sshd
+
+        - name: Disable password authentication entirely
+          ansible.builtin.lineinfile:
+            path: /etc/ssh/sshd_config
+            regexp: '^#?PasswordAuthentication'
+            line: 'PasswordAuthentication no'
+            state: present
+          notify: Reload sshd
 
   handlers:
     - name: Reload sshd
@@ -208,7 +236,7 @@
           192.168.1.232 pve-node2.homelab.local pve-node2
 
     # ===== REBOOT to apply new hostname =====
-    
+
     - name: Reboot the host to apply new hostname
       ansible.builtin.reboot:
         msg: "Rebooting to apply new hostname"
@@ -318,59 +346,58 @@
         mode: '0644'
 
     # ===== UPDATE LIFECYCLE STATE =====
-    - name: Fetch current inventory from Semaphore
-      ansible.builtin.uri:
-        url: "{{ semaphore_url }}/api/project/{{ semaphore_project_id }}/inventory/{{ semaphore_inventory_id }}"
-        method: GET
-        headers:
-          Authorization: "Bearer {{ semaphore_api_token }}"
-        return_content: true
-        status_code: 200
-      register: inventory_fetch
+    - name: Update inventory in Semaphore
       delegate_to: localhost
-
-    - name: Parse inventory
-      ansible.builtin.set_fact:
-        current_inv: "{{ inventory_fetch.json.inventory | from_yaml }}"
-        inv_meta: "{{ inventory_fetch.json }}"
+      become: false
+      connection: local
       when: not ansible_check_mode
-      delegate_to: localhost
+      block:
+        - name: Fetch current inventory from Semaphore
+          ansible.builtin.uri:
+            url: "{{ semaphore_url }}/api/project/{{ semaphore_project_id }}/inventory/{{ semaphore_inventory_id }}"
+            method: GET
+            headers:
+              Authorization: "Bearer {{ semaphore_api_token }}"
+            return_content: true
+            status_code: 200
+          register: inventory_fetch
 
-    - name: Update host lifecycle state to bootstrapped
-      ansible.builtin.set_fact:
-        updated_inv: >-
-          {{
-            current_inv | combine({
-              'all': {
-                'children': {
-                  'proxmox_nodes': {
-                    'hosts': current_inv.all.children.proxmox_nodes.hosts | combine({
-                      inventory_hostname: current_inv.all.children.proxmox_nodes.hosts[inventory_hostname] | combine({
-                        'lifecycle_state': 'bootstrapped',
-                        'bootstrapped_at': ansible_date_time.iso8601,
-                        'ansible_host': target_ip
-                      })
-                    })
+        - name: Parse inventory
+          ansible.builtin.set_fact:
+            current_inv: "{{ inventory_fetch.json.inventory | from_yaml }}"
+            inv_meta: "{{ inventory_fetch.json }}"
+
+        - name: Update host lifecycle state to bootstrapped
+          ansible.builtin.set_fact:
+            updated_inv: >-
+              {{
+                current_inv | combine({
+                  'all': {
+                    'children': {
+                      'proxmox_nodes': {
+                        'hosts': current_inv.all.children.proxmox_nodes.hosts | combine({
+                          inventory_hostname: current_inv.all.children.proxmox_nodes.hosts[inventory_hostname] | combine({
+                            'lifecycle_state': 'bootstrapped',
+                            'bootstrapped_at': ansible_date_time.iso8601,
+                            'ansible_host': target_ip
+                          })
+                        })
+                      }
+                    }
                   }
-                }
-              }
-            }, recursive=True)
-          }}
-      when: not ansible_check_mode
-      delegate_to: localhost
+                }, recursive=True)
+              }}
 
-    - name: Save updated inventory to Semaphore
-      ansible.builtin.uri:
-        url: "{{ semaphore_url }}/api/project/{{ semaphore_project_id }}/inventory/{{ semaphore_inventory_id }}"
-        method: PUT
-        headers:
-          Authorization: "Bearer {{ semaphore_api_token }}"
-          Content-Type: "application/json"
-        body_format: json
-        body: "{{ inv_meta | combine({'inventory': updated_inv | to_nice_yaml}) }}"
-        status_code: 204
-      when: not ansible_check_mode
-      delegate_to: localhost
+        - name: Save updated inventory to Semaphore
+          ansible.builtin.uri:
+            url: "{{ semaphore_url }}/api/project/{{ semaphore_project_id }}/inventory/{{ semaphore_inventory_id }}"
+            method: PUT
+            headers:
+              Authorization: "Bearer {{ semaphore_api_token }}"
+              Content-Type: "application/json"
+            body_format: json
+            body: "{{ inv_meta | combine({'inventory': updated_inv | to_nice_yaml}) }}"
+            status_code: 204
 
     - name: Display completion message
       ansible.builtin.debug:

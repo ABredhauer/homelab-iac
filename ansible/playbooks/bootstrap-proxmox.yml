@@ -39,7 +39,7 @@
         uri: http://download.proxmox.com/debian/pve
         suite: trixie
         components: pve-no-subscription
-        Signed-By: /usr/share/keyrings/proxmox-archive-keyring.gpg
+        signed_by: /usr/share/keyrings/proxmox-archive-keyring.gpg
 
     - name: Configure the Ceph no-subscription repository (deb822 format)
       ansible.builtin.deb822_repository:
@@ -49,7 +49,7 @@
         uri: http://download.proxmox.com/debian/ceph-squid
         suite: trixie
         components: no-subscription
-        Signed-By: /usr/share/keyrings/proxmox-archive-keyring.gpg
+        signed_by: /usr/share/keyrings/proxmox-archive-keyring.gpg
 
     # ===== NOW SAFE TO RUN APT =====
     - name: Update apt cache (enterprise repos now disabled)

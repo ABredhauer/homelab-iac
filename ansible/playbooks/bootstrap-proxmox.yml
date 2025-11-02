@@ -12,7 +12,7 @@
   vars:
     ansible_user: root
     ansible_ssh_pass: "{{ PROXMOX_ROOT_PASSWORD }}"  # From Variable Group
-    ansible_ssh_common_args: '-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null'
+    ansible_ssh_common_args: '-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o PreferredAuthentications=password -o PubkeyAuthentication=no'
     semaphore_ssh_public_key: "{{ SEMAPHORE_SSH_PUBLIC_KEY }}"
 
   tasks:

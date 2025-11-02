@@ -32,6 +32,12 @@
       register: replace_result
       failed_when: replace_result is failed
 
+    - name: Try native module to remove pve enterprise repos
+      ansible.builtin.deb822_repository:
+        name: pve-enterprise
+        state: absent
+      register: deb822_result
+
     - name: Find legacy .list files
       ansible.builtin.find:
         paths: /etc/apt/sources.list.d

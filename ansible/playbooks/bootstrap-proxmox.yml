@@ -22,54 +22,34 @@
 
     # Cleanup the apt repos before doing anything
     - name: Disable Proxmox enterprise repositories (deb822 format)
-      ansible.builtin.replace:
-        path: "{{ item }}"
-        regexp: '^(Types:|URIs:|Suites:|Components:|Signed-By:)'
-        replace: '# \1'
-      with_fileglob:
-        - /etc/apt/sources.list.d/*.sources
-      when: "'enterprise.proxmox.com' in lookup('file', item, errors='ignore')"
-      register: replace_result
-      failed_when: replace_result is failed
-
-    - name: Try native module to remove pve enterprise repos
       ansible.builtin.deb822_repository:
         name: pve-enterprise
         state: absent
-      register: deb822_result
 
-    - name: Find legacy .list files
-      ansible.builtin.find:
-        paths: /etc/apt/sources.list.d
-        patterns: '*.list'
-        file_type: file
-      register: legacy_list_files
-      ignore_errors: true
-
-    - name: Disable enterprise repositories (legacy .list format)
-      ansible.builtin.shell: |
-        file="{{ item.path }}"
-        if [ -f "$file" ] && grep -q "enterprise.proxmox.com" "$file"; then
-          mv "$file" "$file.disabled" && echo "moved: $file"
-        fi
-      args:
-        executable: /bin/bash
-      loop: "{{ legacy_list_files.files | default([]) }}"
-      loop_control:
-        label: "{{ item.path }}"
-      register: mv_results
-      changed_when: "'moved:' in result.stdout"
+    - name: Disable the Ceph enterprise repository (deb822 format)
+      ansible.builtin.deb822_repository:
+        name: ceph
+        state: absent
 
     - name: Configure Proxmox no-subscription repository
-      ansible.builtin.copy:
-        dest: /etc/apt/sources.list.d/proxmox.sources
-        content: |
-          Types: deb
-          URIs: http://download.proxmox.com/debian/pve
-          Suites: trixie
-          Components: pve-no-subscription
-          Signed-By: /usr/share/keyrings/proxmox-archive-keyring.gpg
-        mode: '0644'
+      ansible.builtin.deb822_repository:
+        name: proxmox
+        types: deb
+        state: present
+        uri: http://download.proxmox.com/debian/pve
+        suite: trixie
+        components: pve-no-subscription
+        Signed-By: /usr/share/keyrings/proxmox-archive-keyring.gpg
+
+    - name: Configure the Ceph no-subscription repository (deb822 format)
+      ansible.builtin.deb822_repository:
+        name: ceph
+        types: deb
+        state: present
+        uri: http://download.proxmox.com/debian/ceph-squid
+        suite: trixie
+        components: no-subscription
+        Signed-By: /usr/share/keyrings/proxmox-archive-keyring.gpg
 
     # ===== NOW SAFE TO RUN APT =====
     - name: Update apt cache (enterprise repos now disabled)
@@ -228,17 +208,6 @@
           192.168.1.232 pve-node2.homelab.local pve-node2
 
     # ===== REPOSITORY CONFIGURATION =====
-
-    - name: Configure Ceph no-subscription repository
-      ansible.builtin.copy:
-        dest: /etc/apt/sources.list.d/ceph.sources
-        content: |
-          Types: deb
-          URIs: http://download.proxmox.com/debian/ceph-squid
-          Suites: trixie
-          Components: no-subscription
-          Signed-By: /usr/share/keyrings/proxmox-archive-keyring.gpg
-        mode: '0644'
 
     # ===== PACKAGE MANAGEMENT =====
     - name: Update apt cache

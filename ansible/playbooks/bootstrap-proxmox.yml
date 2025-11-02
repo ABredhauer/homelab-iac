@@ -36,8 +36,8 @@
         name: proxmox
         types: deb
         state: present
-        uri: http://download.proxmox.com/debian/pve
-        suite: trixie
+        uris: http://download.proxmox.com/debian/pve
+        suites: trixie
         components: pve-no-subscription
         signed_by: /usr/share/keyrings/proxmox-archive-keyring.gpg
 
@@ -46,8 +46,8 @@
         name: ceph
         types: deb
         state: present
-        uri: http://download.proxmox.com/debian/ceph-squid
-        suite: trixie
+        uris: http://download.proxmox.com/debian/ceph-squid
+        suites: trixie
         components: no-subscription
         signed_by: /usr/share/keyrings/proxmox-archive-keyring.gpg
 

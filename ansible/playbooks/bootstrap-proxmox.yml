@@ -10,6 +10,8 @@
   remote_user: root  # Connect as root initially
 
   vars:
+    ansible_ssh_pass: "{{ PROXMOX_ROOT_PASSWORD }}"  # From Variable Group
+    ansible_ssh_common_args: '-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null'
     semaphore_ssh_public_key: "{{ SEMAPHORE_SSH_PUBLIC_KEY }}"
 
   tasks:
@@ -127,6 +129,28 @@
     - name: Display user creation complete
       ansible.builtin.debug:
         msg: "✓ Ansible user created and configured"
+
+    - name: Disable root password authentication
+      ansible.builtin.lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: '^#?PermitRootLogin'
+        line: 'PermitRootLogin prohibit-password'
+        state: present
+      notify: reload sshd
+
+    - name: Disable password authentication entirely
+      ansible.builtin.lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: '^#?PasswordAuthentication'
+        line: 'PasswordAuthentication no'
+        state: present
+      notify: reload sshd
+
+  handlers:
+    - name: Reload sshd
+      ansible.builtin.systemd:
+        name: sshd
+        state: reloaded
 
 # ===== PLAY 2: Bootstrap System (as ansible user) =====
 - name: Bootstrap Proxmox Host

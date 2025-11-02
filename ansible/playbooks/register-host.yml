@@ -213,12 +213,11 @@
       ansible.builtin.set_fact:
         new_host_entry: "{{ {target_hostname: host_data} }}"
 
-    - name: Debug new host entry
-      ansible.builtin.debug:
-        msg: |
-          New host entry:
-          {{ new_host_entry | to_nice_yaml }}
-
+    # - name: Debug new host entry
+    #   ansible.builtin.debug:
+    #     msg: |
+    #       New host entry:
+    #       {{ new_host_entry | to_nice_yaml }}
 
     - name: Add host to primary group with full definition
       ansible.builtin.set_fact:
@@ -331,24 +330,23 @@
           URL: {{ update_result.url }}
       when: update_result.status != 204
 
-    - name: Debug - Show exact body being sent
-      ansible.builtin.debug:
-        msg: |
-          URL: {{ semaphore_url }}/api/project/{{ semaphore_project_id }}/tasks
-          Body: {{ body_payload | to_nice_json }}
-      vars:
-        body_payload: >
-          {
-            "template_id": {{ bootstrap_template_id | int }},
-            "message": "Bootstrap {{ target_hostname }}",
-            "limit": "{{ target_hostname }}",
-            "params": {
-              "debug": false,
-              "dry_run": true,
-              "diff": false
-            }
-          }
-
+    # - name: Debug - Show exact body being sent
+    #   ansible.builtin.debug:
+    #     msg: |
+    #       URL: {{ semaphore_url }}/api/project/{{ semaphore_project_id }}/tasks
+    #       Body: {{ body_payload | to_nice_json }}
+    #   vars:
+    #     body_payload: >
+    #       {
+    #         "template_id": {{ bootstrap_template_id | int }},
+    #         "message": "Bootstrap {{ target_hostname }}",
+    #         "limit": "{{ target_hostname }}",
+    #         "params": {
+    #           "debug": false,
+    #           "dry_run": true,
+    #           "diff": false
+    #         }
+    #       }
 
     - name: Trigger bootstrap playbook
       ansible.builtin.uri:
@@ -392,7 +390,7 @@
           API call failed with status {{ bootstrap_task.status }}
           Response: {{ bootstrap_task.content }}
           URL: {{ bootstrap_task.url }}
-      when: bootstrap_task.status != 204
+      when: bootstrap_task.status != 201
 
     - name: Registration complete
       ansible.builtin.debug:

@@ -20,10 +20,10 @@
     - name: Test if root connection is possible
       ansible.builtin.command: echo "root_connection_works"
       register: root_connection_test
-      ignore_errors: yes
-      ignore_unreachable: yes
+      ignore_errors: true
+      ignore_unreachable: true
       changed_when: false
-    
+
     - name: Display connection test result
       ansible.builtin.debug:
         msg: |
@@ -35,11 +35,10 @@
 
     # ===== INITIAL SETUP BLOCK (only if root connection works) =====
     - name: Perform initial root setup
-      block:
-      when: 
+      when:
         - root_connection_test is not failed
         - root_connection_test is not unreachable
-
+      block:
         - name: Verify we're connecting as root
           ansible.builtin.debug:
             msg: "Connected as root - performing initial setup"

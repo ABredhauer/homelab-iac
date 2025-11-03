@@ -202,45 +202,49 @@
           Primary MAC: {{ primary_mac }}
 
     # ===== HOSTNAME CONFIGURATION =====
-    - name: Set system hostname
-      ansible.builtin.hostname:
-        name: "{{ target_hostname }}"
 
-    - name: Backup /etc/hosts
-      ansible.builtin.copy:
-        src: /etc/hosts
-        dest: "/etc/hosts.backup.{{ ansible_date_time.epoch }}"
-        mode: preserve
-        remote_src: true
+    - name: Only set the hostname if we haven't already done it
+      when: ansible_hostname != target_hostname
+      block:
+        - name: Set system hostname
+          ansible.builtin.hostname:
+            name: "{{ target_hostname }}"
 
-    - name: Configure /etc/hosts - Remove temp entries
-      ansible.builtin.lineinfile:
-        path: /etc/hosts
-        regexp: ".*pve-temp.*"
-        state: absent
+        - name: Backup /etc/hosts
+          ansible.builtin.copy:
+            src: /etc/hosts
+            dest: "/etc/hosts.backup.{{ ansible_date_time.epoch }}"
+            mode: preserve
+            remote_src: true
 
-    - name: Configure /etc/hosts - localhost entry
-      ansible.builtin.lineinfile:
-        path: /etc/hosts
-        line: "127.0.1.1 {{ target_hostname }}.homelab.local {{ target_hostname }}"
-        regexp: "^127\\.0\\.1\\.1"
+        - name: Configure /etc/hosts - Remove temp entries
+          ansible.builtin.lineinfile:
+            path: /etc/hosts
+            regexp: ".*pve-temp.*"
+            state: absent
 
-    - name: Configure /etc/hosts - cluster nodes
-      ansible.builtin.blockinfile:
-        path: /etc/hosts
-        marker: "# {mark} ANSIBLE MANAGED - Proxmox Cluster Nodes"
-        block: |
-          # Proxmox cluster nodes
-          192.168.1.230 pve-node1.homelab.local pve-node1
-          192.168.1.232 pve-node2.homelab.local pve-node2
+        - name: Configure /etc/hosts - localhost entry
+          ansible.builtin.lineinfile:
+            path: /etc/hosts
+            line: "127.0.1.1 {{ target_hostname }}.homelab.local {{ target_hostname }}"
+            regexp: "^127\\.0\\.1\\.1"
 
-    # ===== REBOOT to apply new hostname =====
+        - name: Configure /etc/hosts - cluster nodes
+          ansible.builtin.blockinfile:
+            path: /etc/hosts
+            marker: "# {mark} ANSIBLE MANAGED - Proxmox Cluster Nodes"
+            block: |
+              # Proxmox cluster nodes
+              192.168.1.230 pve-node1.homelab.local pve-node1
+              192.168.1.232 pve-node2.homelab.local pve-node2
 
-    - name: Reboot the host to apply new hostname
-      ansible.builtin.reboot:
-        msg: "Rebooting to apply new hostname"
-        reboot_timeout: 120
-        test_command: hostnamectl | grep "{{ target_hostname }}"
+        # ===== REBOOT to apply new hostname =====
+
+        - name: Reboot the host to apply new hostname
+          ansible.builtin.reboot:
+            msg: "Rebooting to apply new hostname"
+            reboot_timeout: 120
+            test_command: hostnamectl | grep "{{ target_hostname }}"
 
     # ===== REPOSITORY CONFIGURATION =====
 

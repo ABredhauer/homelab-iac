@@ -16,7 +16,7 @@ all:
           
           # Network Interfaces
           primary_interface:
-            name: eno1
+            name: enp0s31f6
             mac: "6c:3c:8c:43:10:e9"
             dhcp: true  # Use DHCP during bootstrap, switch to static later
             static_ip: 192.168.1.230
@@ -31,9 +31,9 @@ all:
             dhcp: true
 
           cluster_interface:
-            name: eno2
+            name: enx00e04c680235
             mac: "00:e0:4c:68:02:35"
-            dhcp: false
+            dhcp: true
             static_ip: 192.168.10.230
             netmask: 255.255.255.0
             gateway: 192.168.10.1
@@ -70,7 +70,7 @@ all:
           node_id: 2
           
           primary_interface:
-            name: eno1
+            name: enp0s31f6
             mac: "6c:3c:8c:2f:43:6a"
             dhcp: true
             static_ip: 192.168.1.232
@@ -85,7 +85,7 @@ all:
             dhcp: true
           
           cluster_interface:
-            name: eno2
+            name: enx00e04c680271
             mac: "00:e0:4c:68:02:71"  # Update with actual MAC
             dhcp: true
             static_ip: 192.168.10.232

@@ -206,37 +206,37 @@
     - name: Only set the hostname if we haven't already done it
       when: ansible_hostname != target_hostname
       block:
-        - name: Set system hostname
-          ansible.builtin.hostname:
-            name: "{{ target_hostname }}"
+        # ===== NETWORK & RESOLUTION CONFIG (DHCP SUPPORT) =====
+        # Reference: https://free-pmx.org/guides/dhcp-single/
 
-        - name: Backup /etc/hosts
-          ansible.builtin.copy:
-            src: /etc/hosts
-            dest: "/etc/hosts.backup.{{ ansible_date_time.epoch }}"
-            mode: preserve
-            remote_src: true
+        - name: Install networking helper packages
+          ansible.builtin.apt:
+            name:
+              - isc-dhcp-client  # Required for Proxmox 9+ DHCP
+              - libnss-myhostname # Resolves hostname to local IP dynamically
+            state: present
 
-        - name: Configure /etc/hosts - Remove temp entries
-          ansible.builtin.lineinfile:
-            path: /etc/hosts
-            regexp: ".*pve-temp.*"
-            state: absent
-
-        - name: Configure /etc/hosts - localhost entry
-          ansible.builtin.lineinfile:
-            path: /etc/hosts
-            line: "127.0.1.1 {{ target_hostname }}.homelab.local {{ target_hostname }}"
-            regexp: "^127\\.0\\.1\\.1"
-
-        - name: Configure /etc/hosts - cluster nodes
+        - name: Configure IPv4 Precedence in /etc/gai.conf
           ansible.builtin.blockinfile:
-            path: /etc/hosts
-            marker: "# {mark} ANSIBLE MANAGED - Proxmox Cluster Nodes"
+            path: /etc/gai.conf
+            create: true
+            mode: '0644'
             block: |
-              # Proxmox cluster nodes
-              192.168.1.230 pve-node1.homelab.local pve-node1
-              192.168.1.232 pve-node2.homelab.local pve-node2
+              # Prefer IPv4 over IPv6 (Critical for Proxmox DHCP)
+              precedence ::ffff:0:0/96 100
+
+              # Optional: Prefer specific subnet if multiple exist
+              scopev4 ::ffff:192.168.1.0/120 1
+
+        - name: Configure /etc/hosts for DHCP Setup
+          ansible.builtin.lineinfile:
+            path: /etc/hosts
+            regexp: '^127\.0\.1\.1'
+            state: absent
+          # We REMOVE 127.0.1.1 because libnss-myhostname handles resolution
+          # based on the IP assigned by DHCP.
+          # This prevents the "split brain" where /etc/hosts says one thing
+          # but the interface has a different IP.
 
         # ===== REBOOT to apply new hostname =====
 
@@ -245,6 +245,13 @@
             msg: "Rebooting to apply new hostname"
             reboot_timeout: 120
             test_command: hostnamectl | grep "{{ target_hostname }}"
+
+        - name: Verify hostname resolution works
+          ansible.builtin.command: hostname -i
+          register: hostname_check
+          changed_when: false
+          failed_when: "'127.0.0.1' in hostname_check.stdout"
+          # We want it to resolve to the LAN IP (e.g., 192.168.1.x), NOT localhost
 
     # ===== REPOSITORY CONFIGURATION =====
 

@@ -182,6 +182,17 @@
     network_config: "{{ hostvars[inventory_hostname].network_interfaces }}"
     target_ip: "{{ network_config.primary.static_ip }}"
 
+    # Get actual interface names from inventory
+    prod_interface: "{{ hostvars[inventory_hostname].primary_interface.name }}"
+    mgmt_interface: "{{ hostvars[inventory_hostname].cluster_interface.name }}"
+
+    prod_bridge: vmbr0
+    mgmt_bridge: vmbr1
+
+    # DHCP reserved IPs (for documentation/validation only)
+    prod_ip: "{{ hostvars[inventory_hostname].primary_interface.dhcp_reserved_ip }}"
+    mgmt_ip: "{{ hostvars[inventory_hostname].cluster_interface.dhcp_reserved_ip }}"
+
     # Semaphore API (from Variable Group)
     semaphore_url: "{{ SEMAPHORE_WEB_ROOT }}"
     semaphore_project_id: "{{ SEMAPHORE_PROJECT_ID }}"
@@ -263,6 +274,141 @@
           changed_when: false
           failed_when: "'127.0.0.1' in hostname_check.stdout"
           # We want it to resolve to the LAN IP (e.g., 192.168.1.x), NOT localhost
+
+    # ===== NETWORK CONFIGURATION =====
+
+    - name: Display configuration plan
+      ansible.builtin.debug:
+        msg: |
+          Network Configuration for {{ inventory_hostname }}
+          ===================================================
+
+          Production Network ({{ prod_interface }}):
+            Bridge: {{ prod_bridge }}
+            DHCP Reserved IP: {{ prod_ip }}
+
+          Management Network ({{ mgmt_interface }}):
+            Bridge: {{ mgmt_bridge }}
+            DHCP Reserved IP: {{ mgmt_ip }}
+
+          Note: Using DHCP reservations configured in router/Pi-hole
+
+    - name: Backup existing network config
+      ansible.builtin.copy:
+        src: /etc/network/interfaces
+        dest: "/etc/network/interfaces.backup.{{ ansible_date_time.iso8601_basic_short }}"
+        remote_src: true
+        mode: '0644'
+      register: backup_result
+
+    - name: Deploy network configuration
+      ansible.builtin.copy:
+        dest: /etc/network/interfaces
+        content: |
+          # Proxmox Network Configuration - Dual Bridge with DHCP
+          # Generated: {{ ansible_date_time.iso8601 }}
+          # Node: {{ inventory_hostname }}
+
+          auto lo
+          iface lo inet loopback
+
+          # ===== PRODUCTION NETWORK =====
+          # Built-in NIC: {{ prod_interface }} (MAC: {{ hostvars[inventory_hostname].primary_interface.mac }})
+          iface {{ prod_interface }} inet manual
+
+          auto {{ prod_bridge }}
+          iface {{ prod_bridge }} inet dhcp
+              bridge-ports {{ prod_interface }}
+              bridge-stp off
+              bridge-fd 0
+              # DHCP reservation: {{ prod_ip }}
+
+          # ===== MANAGEMENT NETWORK =====
+          # USB Adapter: {{ mgmt_interface }} (MAC: {{ hostvars[inventory_hostname].cluster_interface.mac }})
+          iface {{ mgmt_interface }} inet manual
+
+          auto {{ mgmt_bridge }}
+          iface {{ mgmt_bridge }} inet dhcp
+              bridge-ports {{ mgmt_interface }}
+              bridge-stp off
+              bridge-fd 0
+              # DHCP reservation: {{ mgmt_ip }}
+              # VLAN 10 (if needed)
+
+          source /etc/network/interfaces.d/*
+        owner: root
+        group: root
+        mode: '0644'
+      register: new_config
+
+    - name: Restart networking
+      ansible.builtin.systemd:
+        name: networking
+        state: restarted
+      failed_when: false
+
+    - name: Wait for network stabilization
+      ansible.builtin.pause:
+        seconds: 10
+
+    - name: Verify both bridges exist
+      ansible.builtin.command: ip link show {{ item }}
+      changed_when: false
+      loop:
+        - "{{ prod_bridge }}"
+        - "{{ mgmt_bridge }}"
+      register: bridge_check
+
+    - name: Get bridge IP addresses
+      ansible.builtin.command: ip addr show {{ item }}
+      changed_when: false
+      loop:
+        - "{{ prod_bridge }}"
+        - "{{ mgmt_bridge }}"
+      register: bridge_ips
+
+    - name: Display bridge status
+      ansible.builtin.debug:
+        msg: "{{ bridge_ips.results | map(attribute='stdout_lines') | list }}"
+
+    - name: Verify DHCP assigned expected IPs
+      ansible.builtin.assert:
+        that:
+          - prod_ip in bridge_ips.results[0].stdout
+          - mgmt_ip in bridge_ips.results[1].stdout
+        fail_msg: |
+          DHCP did not assign expected IPs!
+          Expected: {{ prod_ip }} and {{ mgmt_ip }}
+          Check router/Pi-hole DHCP reservations
+      failed_when: false
+
+    - name: Test connectivity
+      ansible.builtin.command: ping -c 1 192.168.1.1
+      changed_when: false
+      failed_when: false
+
+    - name: Create completion marker
+      ansible.builtin.copy:
+        dest: /opt/network-config-complete
+        content: |
+          Network Configuration Complete
+          ================================
+          Node: {{ inventory_hostname }}
+          Timestamp: {{ ansible_date_time.iso8601 }}
+
+          Production Bridge ({{ prod_bridge }}):
+            Interface: {{ prod_interface }}
+            MAC: {{ hostvars[inventory_hostname].primary_interface.mac }}
+            DHCP Reserved: {{ prod_ip }}
+
+          Management Bridge ({{ mgmt_bridge }}):
+            Interface: {{ mgmt_interface }}
+            MAC: {{ hostvars[inventory_hostname].cluster_interface.mac }}
+            DHCP Reserved: {{ mgmt_ip }}
+
+          Backup: {{ backup_result.dest }}
+        mode: '0644'
+
 
     # ===== REPOSITORY CONFIGURATION =====
 
@@ -435,6 +581,6 @@
   handlers:
     - name: Restart timesyncd
       ansible.builtin.systemd:
-        name: systemd-timesyncd
+        name: chronyd
         state: restarted
         enabled: true

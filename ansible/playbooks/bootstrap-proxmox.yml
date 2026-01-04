@@ -228,6 +228,12 @@
               # Optional: Prefer specific subnet if multiple exist
               scopev4 ::ffff:192.168.1.0/120 1
 
+        - name: Configure /etc/hosts - Remove temp entries
+          ansible.builtin.lineinfile:
+            path: /etc/hosts
+            regexp: ".*pve-temp.*"
+            state: absent
+
         - name: Configure /etc/hosts for DHCP Setup
           ansible.builtin.lineinfile:
             path: /etc/hosts
@@ -243,7 +249,7 @@
         - name: Reboot the host to apply new hostname
           ansible.builtin.reboot:
             msg: "Rebooting to apply new hostname"
-            reboot_timeout: 120
+            reboot_timeout: 300
             test_command: hostnamectl | grep "{{ target_hostname }}"
 
         - name: Verify hostname resolution works

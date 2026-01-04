@@ -204,7 +204,7 @@
     # ===== HOSTNAME CONFIGURATION =====
 
     - name: Only set the hostname if we haven't already done it
-      when: ansible_hostname != target_hostname
+      # when: ansible_hostname != target_hostname
       block:
 
         - name: Set system hostname

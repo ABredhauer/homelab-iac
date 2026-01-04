@@ -206,6 +206,11 @@
     - name: Only set the hostname if we haven't already done it
       when: ansible_hostname != target_hostname
       block:
+
+        - name: Set system hostname
+          ansible.builtin.hostname:
+            name: "{{ target_hostname }}"
+
         # ===== NETWORK & RESOLUTION CONFIG (DHCP SUPPORT) =====
         # Reference: https://free-pmx.org/guides/dhcp-single/
 

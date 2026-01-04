@@ -183,15 +183,15 @@
     target_ip: "{{ network_config.primary.static_ip }}"
 
     # Get actual interface names from inventory
-    prod_interface: "{{ hostvars[inventory_hostname].primary_interface.name }}"
-    mgmt_interface: "{{ hostvars[inventory_hostname].cluster_interface.name }}"
+    prod_interface: "{{ network_config.primary.name }}"
+    mgmt_interface: "{{ network_config.cluster.name }}"
 
     prod_bridge: vmbr0
     mgmt_bridge: vmbr1
 
     # DHCP reserved IPs (for documentation/validation only)
-    prod_ip: "{{ hostvars[inventory_hostname].primary_interface.dhcp_reserved_ip }}"
-    mgmt_ip: "{{ hostvars[inventory_hostname].cluster_interface.dhcp_reserved_ip }}"
+    prod_ip: "{{ network_config.primary.static_ip }}"
+    mgmt_ip: "{{ network_config.cluster.static_ip }}"
 
     # Semaphore API (from Variable Group)
     semaphore_url: "{{ SEMAPHORE_WEB_ROOT }}"
@@ -480,15 +480,13 @@
       community.general.timezone:
         name: Australia/Brisbane
 
-    - name: Configure NTP
-      ansible.builtin.copy:
-        dest: /etc/systemd/timesyncd.conf
-        content: |
-          [Time]
-          NTP=0.au.pool.ntp.org 1.au.pool.ntp.org 2.au.pool.ntp.org
-          FallbackNTP=ntp.ubuntu.com
-        mode: '0644'
-      notify: Restart timesyncd
+    - name: Configure Chrony NTP Sources
+      ansible.builtin.lineinfile:
+        path: /etc/chrony/chrony.conf
+        regexp: '^pool 2.debian.pool.ntp.org iburst'
+        line: 'server 0.au.pool.ntp.org iburst'
+        state: present
+      notify: Restart chronyd
 
     # ===== COMPLETION MARKERS =====
     - name: Create bootstrap completion file

@@ -313,7 +313,7 @@
           iface lo inet loopback
 
           # ===== PRODUCTION NETWORK =====
-          # Built-in NIC: {{ prod_interface }} (MAC: {{ hostvars[inventory_hostname].primary_interface.mac }})
+          # Built-in NIC: {{ prod_interface }} (MAC: {{ network_config.primary.mac }})
           iface {{ prod_interface }} inet manual
 
           auto {{ prod_bridge }}
@@ -324,7 +324,7 @@
               # DHCP reservation: {{ prod_ip }}
 
           # ===== MANAGEMENT NETWORK =====
-          # USB Adapter: {{ mgmt_interface }} (MAC: {{ hostvars[inventory_hostname].cluster_interface.mac }})
+          # USB Adapter: {{ mgmt_interface }} (MAC: {{ network_config.cluster.mac }})
           iface {{ mgmt_interface }} inet manual
 
           auto {{ mgmt_bridge }}
@@ -398,12 +398,12 @@
 
           Production Bridge ({{ prod_bridge }}):
             Interface: {{ prod_interface }}
-            MAC: {{ hostvars[inventory_hostname].primary_interface.mac }}
+            MAC: {{ network_config.primary.mac }}
             DHCP Reserved: {{ prod_ip }}
 
           Management Bridge ({{ mgmt_bridge }}):
             Interface: {{ mgmt_interface }}
-            MAC: {{ hostvars[inventory_hostname].cluster_interface.mac }}
+            MAC: {{ network_config.cluster.mac }}
             DHCP Reserved: {{ mgmt_ip }}
 
           Backup: {{ backup_result.dest }}

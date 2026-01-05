@@ -577,7 +577,7 @@
           Next: Configure network interfaces and join cluster
 
   handlers:
-    - name: Restart timesyncd
+    - name: Restart chronyd
       ansible.builtin.systemd:
         name: chronyd
         state: restarted

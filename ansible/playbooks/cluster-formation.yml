@@ -1,0 +1,283 @@
+# ansible/playbooks/cluster-formation.yml
+# Form Proxmox cluster with dual-link corosync + QDevice quorum
+# This playbook should run AFTER bootstrap-proxmox.yml on both nodes
+
+---
+- name: Form Proxmox HA Cluster
+  hosts: proxmox_cluster_masters  # Only run on node 1 initially
+  become: true
+  gather_facts: true
+
+  vars:
+    cluster_name: "homelab-cluster"
+    cluster_master: "pve-node1"
+    cluster_master_ip_mgmt: "192.168.10.230"
+    cluster_master_mgmt_hostname: "pve-node1.homelab.bredhauer.net"
+    cluster_master_internal_hostname: "pve-node1.internal.bredhauer.net"
+    cluster_members:
+      - hostname: "pve-node2"
+        mgmt_ip: "192.168.10.232"
+        mgmt_hostname: "pve-node2.homelab.bredhauer.net"
+        internal_hostname: "pve-node2.internal.bredhauer.net"
+
+    # QDevice configuration
+    qdevice_ip: "192.168.1.164"  # Your Raspberry Pi
+    qdevice_fingerprint: ""  # Will be populated after cluster creation
+
+  tasks:
+    - name: Display cluster formation plan
+      ansible.builtin.debug:
+        msg: |
+          Proxmox Cluster Formation Plan
+          ==============================
+          Cluster Name: {{ cluster_name }}
+          Master Node: {{ cluster_master }}
+          Master Mgmt IP: {{ cluster_master_ip_mgmt }}
+
+          Cluster Members:
+          {% for member in cluster_members %}
+            - {{ member.hostname }} ({{ member.mgmt_ip }})
+          {% endfor %}
+
+          QDevice: {{ qdevice_ip }}
+
+          This playbook will:
+          1. Create cluster on master node
+          2. Join member nodes to cluster
+          3. Add redundant corosync link (Link 1)
+          4. Setup QDevice for quorum voting
+
+    # ===== PHASE 1: CREATE CLUSTER ON MASTER =====
+    - name: Check if cluster already exists
+      ansible.builtin.command: pvecm status
+      register: cluster_check
+      changed_when: false
+      failed_when: false
+      ignore_errors: true
+
+    - name: Create cluster (if not already created)
+      when:
+        - cluster_check is failed or cluster_check.rc != 0
+      block:
+        - name: Create Proxmox cluster
+          ansible.builtin.command: >
+            pvecm create {{ cluster_name }} --link0 {{ cluster_master_mgmt_hostname }} --link1 {{ cluster_master_internal_hostname }}
+          register: cluster_create
+          changed_when: cluster_create.rc == 0
+          failed_when: >
+            cluster_create.rc != 0 and
+            'already exists' not in cluster_create.stderr
+
+        - name: Wait for cluster services to stabilize
+          ansible.builtin.pause:
+            seconds: 10
+
+        - name: Verify cluster creation
+          ansible.builtin.command: pvecm status
+          register: cluster_status
+          changed_when: false
+
+        - name: Display cluster creation result
+          ansible.builtin.debug:
+            msg: "{{ cluster_status.stdout }}"
+
+    # ===== PHASE 3: GET CERTIFICATE FINGERPRINT =====
+    - name: Get cluster certificate fingerprint
+      block:
+        - name: Extract certificate fingerprint for joining nodes
+          ansible.builtin.shell: |
+            set -o pipefail
+            openssl x509 -noout -fingerprint -sha256 < /etc/pve/priv/ssl/pve-root-ca.pem | cut -d= -f2
+          register: cluster_fingerprint
+          changed_when: false
+
+        - name: Store fingerprint for member nodes
+          ansible.builtin.set_fact:
+            cluster_cert_fingerprint: "{{ cluster_fingerprint.stdout }}"
+
+        - name: Display fingerprint
+          ansible.builtin.debug:
+            msg: |
+              Certificate Fingerprint (for joining nodes):
+              {{ cluster_cert_fingerprint }}
+
+    # ===== PHASE 4: SETUP QDEVICE =====
+    - name: Setup QDevice for external quorum voting
+      block:
+        - name: Install QDevice package
+          ansible.builtin.apt:
+            name: corosync-qdevice
+            state: present
+
+        - name: Setup QDevice (requires SSH access to QDevice host)
+          ansible.builtin.command: |
+            pvecm qdevice setup {{ qdevice_ip }}
+          register: qdevice_setup
+          changed_when: qdevice_setup.rc == 0 and 'already configured' not in qdevice_setup.stderr
+          failed_when: >
+            qdevice_setup.rc != 0 and
+            'already configured' not in qdevice_setup.stderr
+          ignore_errors: true
+
+        - name: Wait for QDevice to register
+          ansible.builtin.pause:
+            seconds: 10
+
+        - name: Verify QDevice registration
+          ansible.builtin.command: pvecm status
+          register: qdevice_status
+          changed_when: false
+
+        - name: Display final cluster status with QDevice
+          ansible.builtin.debug:
+            msg: "{{ qdevice_status.stdout }}"
+
+    # ===== FINAL VERIFICATION =====
+    - name: Final cluster health check
+      block:
+        - name: Verify cluster quorum
+          ansible.builtin.command: pvecm status
+          register: final_status
+          changed_when: false
+
+        - name: Create cluster completion marker
+          ansible.builtin.copy:
+            dest: /opt/cluster-formation-complete
+            content: |
+              Proxmox Cluster Formation Complete
+              ===================================
+              Cluster Name: {{ cluster_name }}
+              Nodes: 2
+              QDevice: Configured
+              Quorum: 3 votes (2 required)
+              Timestamp: {{ ansible_date_time.iso8601 }}
+
+              Corosync Links:
+                Link 0: {{ cluster_master_mgmt_hostname }} (USB 2.5GbE)
+                Link 1: pve-node1.internal.bredhauer.net (Built-in 1GbE)
+
+              Final Status:
+              {{ final_status.stdout }}
+            mode: '0644'
+
+        - name: Display completion message
+          ansible.builtin.debug:
+            msg: |
+              ✓ Proxmox Cluster Formation Complete!
+              ✓ Cluster Name: {{ cluster_name }}
+              ✓ Quorum: 3 votes (2 required)
+              ✓ Links: 2 (USB primary, Built-in failover)
+              ✓ QDevice: Configured and voting
+
+              Next: Configure shared storage (NFS/Ceph)
+
+# ===== PLAY 2: Join Member Nodes to Cluster =====
+- name: Join Member Nodes to Cluster
+  hosts: proxmox_cluster_members
+  serial: 1  # Join nodes one at a time to avoid issues
+  become: true
+  gather_facts: true
+
+  vars:
+    cluster_master_hostname: "pve-node1.homelab.bredhauer.net"
+
+  tasks:
+    - name: Display node join plan
+      ansible.builtin.debug:
+        msg: |
+          Joining {{ inventory_hostname }} to cluster
+          ==========================================
+          Master: {{ cluster_master_hostname }}
+          This Node: {{ inventory_hostname }}
+          Link 0: {{ inventory_hostname }}.homelab.bredhauer.net
+          Link 1: {{ inventory_hostname }}.internal.bredhauer.net
+
+    - name: Check if node is already in cluster
+      ansible.builtin.command: pvecm status
+      register: node_cluster_check
+      changed_when: false
+      failed_when: false
+      ignore_errors: true
+
+    - name: Join node to cluster (if not already member)
+      when:
+        - node_cluster_check is failed or 'Quorate' not in node_cluster_check.stdout
+      block:
+        - name: Install QDevice package on member
+          ansible.builtin.apt:
+            name: corosync-qdevice
+            state: present
+
+        - name: Get cluster fingerprint from master
+          ansible.builtin.shell: |
+            set -o pipefail
+            openssl x509 -noout -fingerprint -sha256 < /etc/pve/priv/ssl/pve-root-ca.pem | cut -d= -f2
+          register: cluster_fingerprint
+          delegate_to: "{{ groups['proxmox_cluster_masters'][0] }}"
+          become: true
+          changed_when: false
+
+        - name: Add node to cluster with dual links
+          ansible.builtin.command: >
+            pvecm add {{ cluster_master_hostname }}
+            --link0 {{ inventory_hostname }}.homelab.bredhauer.net
+            --link1 {{ inventory_hostname }}.internal.bredhauer.net
+            --fingerprint {{ cluster_fingerprint.stdout }}
+          register: node_join
+          changed_when: node_join.rc == 0
+          failed_when: >
+            node_join.rc != 0 and
+            'already part of cluster' not in node_join.stderr
+
+        - name: Wait for cluster sync
+          ansible.builtin.pause:
+            seconds: 15
+
+        - name: Verify node joined successfully
+          ansible.builtin.command: pvecm status
+          register: node_join_status
+          changed_when: false
+
+        - name: Display node join result
+          ansible.builtin.debug:
+            msg: "{{ node_join_status.stdout }}"
+
+        - name: Create node join completion marker
+          ansible.builtin.copy:
+            dest: /opt/cluster-join-complete
+            content: |
+              Node Cluster Join Complete
+              ==========================
+              Node: {{ inventory_hostname }}
+              Joined: {{ ansible_date_time.iso8601 }}
+
+              Links:
+                Link 0 (Mgmt): {{ inventory_hostname }}.homelab.bredhauer.net
+                Link 1 (Prod): {{ inventory_hostname }}.internal.bredhauer.net
+
+              Cluster Status:
+              {{ node_join_status.stdout }}
+            mode: '0644'
+
+    - name: Final node health check
+      block:
+        - name: Verify corosync is running
+          ansible.builtin.systemd:
+            name: corosync
+            state: started
+            enabled: true
+
+        - name: Verify pve-cluster is running
+          ansible.builtin.systemd:
+            name: pve-cluster
+            state: started
+            enabled: true
+
+        - name: Check pvecm status
+          ansible.builtin.command: pvecm status
+          register: final_node_status
+          changed_when: false
+
+        - name: Display final node status
+          ansible.builtin.debug:
+            msg: "{{ final_node_status.stdout }}"

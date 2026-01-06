@@ -87,7 +87,7 @@
         - name: Extract certificate fingerprint for joining nodes
           ansible.builtin.shell: |
             set -o pipefail
-            openssl x509 -noout -fingerprint -sha256 < /etc/pve/priv/ssl/pve-root-ca.pem | cut -d= -f2
+            pvenode cert info --output-format json | jq -r '.[] | select(.filename=="pve-ssl.pem") | .fingerprint'
           register: cluster_fingerprint
           changed_when: false
 

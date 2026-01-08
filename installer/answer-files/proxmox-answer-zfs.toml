@@ -26,34 +26,28 @@ source = "from-dhcp"                    # Let DHCP handle IP, DNS, gateway
 # This section is critical and hard to change after installation
 
 # Filesystem type - you were correct to put this here!
-filesystem = "ext4"                      # Options: ext4, xfs, zfs, btrfs
+filesystem = "zfs"                      # Options: ext4, xfs, zfs, btrfs
 
 # Disk selection strategy
-disk-list = ["*"]                       # Select any available disk
+disk-list = ["nvme0n1"]                       # Select any available disk
                                        # Alternatives:
                                        # ["/dev/sda"] - specific disk
                                        # ["/dev/nvme0n1"] - specific NVMe
                                        # ["*SAMSUNG*"] - match by model
 
-filter-match = "any"                   # Use first disk found that matches
+# filter-match = "any"                   # Use first disk found that matches
                                        # "any" = use any disk from disk_list
                                        # "all" = all disks must match (for RAID)
 
-# LVM configuration - you were right about the prefix!
-lvm.hdsize = 900                       # Total disk space to use (GB)
-                                       # Leave ~100GB unallocated for SSD health
-
-lvm.swapsize = 8                       # Swap size (GB) - 8GB for 32GB RAM
-
-lvm.maxroot = 100                      # Maximum root volume size (GB)
-                                       # Contains: OS, applications, logs
-
-lvm.maxvz = 792                        # Maximum data volume size (GB)  
-                                       # This is where VMs and containers live
-                                       # 792GB = 900 - 100 (root) - 8 (swap)
-
-lvm.minfree = 16                       # Minimum free space in volume group (GB)
-                                       # Reserve for snapshots and expansion
+# ZFS configuration - you were right about the prefix!
+zfs.raid = "raid0"
+zfs.ashift = 12
+zfs.arc-max = 8192
+zfs.checksum = "on"
+zfs.compress = "lz4"
+zfs.copies = 1
+zfs.hdsize = 892                       # Total disk space to use (GB)
+                                       # Leave ~100GB unallocated for SSD health + 8 Gb for potential swap
 
 # Final layout on your 1TB SSD will be approximately:
 # - /dev/sda1: 1GB (EFI boot partition)
@@ -72,4 +66,4 @@ url = "https://raw.githubusercontent.com/ABredhauer/homelab-iac/main/scripts/boo
 # Optional: Add error handling
 # If the script fails, what should happen?
 # Options: "continue", "abort" 
-on-error = "continue"                  # Continue booting even if script fails
+# on-error = "continue"                  # Continue booting even if script fails

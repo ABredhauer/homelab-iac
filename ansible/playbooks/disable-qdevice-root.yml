@@ -1,0 +1,29 @@
+---
+- name: Disable root SSH after qdevice setup
+  hosts: qdevice
+  become: yes
+  tasks:
+    - name: Remove root's authorized_keys
+      authorized_key:
+        user: root
+        state: absent
+        key: "{{ lookup('url', 'https://github.com/ABredhauer.keys') }}"
+
+    - name: Disable root login
+      lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: '^PermitRootLogin'
+        line: "PermitRootLogin no"
+        state: present
+      notify: Reload SSHD
+
+    - name: Remove temporary access marker
+      file:
+        path: /opt/qdevice-root-access-enabled
+        state: absent
+
+  handlers:
+    - name: Reload SSHD
+      systemd:
+        name: ssh
+        state: reloaded

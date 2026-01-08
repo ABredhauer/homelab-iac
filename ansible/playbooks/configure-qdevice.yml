@@ -1,0 +1,107 @@
+---
+- name: Configure QDevice on Raspberry Pi
+  hosts: qdevice
+  become: true
+  gather_facts: true
+
+  vars:
+    proxmox_node_ips:
+      - 192.168.1.230  # pve-node1
+      - 192.168.1.232  # pve-node2
+
+    github_user: "ABredhauer"
+    ansible_ssh_key_url: "https://github.com/{{ github_user }}.keys"
+
+  tasks:
+    # --- Verify Ansible access is working ---
+    - name: Verify ansible user can sudo without password
+      ansible.builtin.command: sudo -n true
+      changed_when: false
+
+    # --- Install and configure corosync-qnetd ---
+    - name: Ensure corosync-qnetd is installed
+      apt:
+        name: corosync-qnetd
+        state: present
+        update_cache: true
+
+    - name: Create dedicated qnetd user (security best practice)
+      user:
+        name: coroqnetd
+        system: true
+        shell: /sbin/nologin
+        home: /var/lib/coroqnetd
+        create_home: true
+
+    - name: Set qnetd directories ownership
+      file:
+        path: "{{ item }}"
+        owner: coroqnetd
+        group: coroqnetd
+        mode: "0750"
+        state: directory
+      loop:
+        - /etc/corosync/qnetd
+        - /var/run/corosync-qnetd
+
+    # --- Temporary root enablement for Proxmox setup ---
+    - name: Copy ansible's SSH key to root's authorized_keys
+      authorized_key:
+        user: root
+        state: present
+        key: "{{ lookup('url', ansible_ssh_key_url) }}"
+        manage_dir: true
+
+    - name: Temporarily enable root SSH access
+      lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: '^#?PermitRootLogin'
+        line: "PermitRootLogin prohibit-password"
+        state: present
+        backup: true
+      notify: Reload SSHD
+
+    - name: Ensure PubkeyAuthentication is enabled
+      lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: '^#?PubkeyAuthentication'
+        line: "PubkeyAuthentication yes"
+        state: present
+      notify: Reload SSHD
+
+    # --- Configure corosync-qnetd service ---
+    - name: Configure qnetd to run as non-root user
+      lineinfile:
+        path: /etc/default/corosync-qnetd
+        regexp: '^#?COROSYNC_QNETD_RUNAS'
+        line: "COROSYNC_QNETD_RUNAS=coroqnetd"
+        create: true
+        mode: "0644"
+
+    - name: Enable and start corosync-qnetd
+      systemd:
+        name: corosync-qnetd
+        enabled: true
+        state: started
+
+    - name: Verify qnetd is listening on port 5403
+      wait_for:
+        port: 5403
+        timeout: 30
+        state: started
+
+    - name: Create temporary access documentation
+      copy:
+        content: |
+          # QDevice Temporary Root Access Enabled
+          # Date: {{ ansible_date_time.iso8601 }}
+          # Purpose: Allow 'pvecm qdevice setup' from Proxmox nodes
+          # Action Required: Run disable-qdevice-root.yml after setup
+        dest: /opt/qdevice-root-access-enabled
+        mode: "0644"
+
+  handlers:
+    - name: Reload SSHD
+      systemd:
+        name: ssh
+        state: reloaded

@@ -20,10 +20,6 @@
         mgmt_hostname: "pve-node2.homelab.bredhauer.net"
         internal_hostname: "pve-node2.internal.bredhauer.net"
 
-    # QDevice configuration
-    qdevice_ip: "192.168.1.164"  # Your Raspberry Pi
-    qdevice_fingerprint: ""  # Will be populated after cluster creation
-
   tasks:
     - name: Display cluster formation plan
       ansible.builtin.debug:
@@ -179,7 +175,7 @@
 
   tasks:
     - name: Ensure root SSH directory exists
-      file:
+      ansible.builtin.file:
         path: /root/.ssh
         state: directory
         mode: '0700'
@@ -187,28 +183,35 @@
         group: root
 
     - name: Check if root SSH key exists
-      stat:
+      ansible.builtin.stat:
         path: /root/.ssh/id_rsa
       register: root_ssh_key
 
     - name: Generate SSH key for root (if missing)
-      command: ssh-keygen -t rsa -b 4096 -f /root/.ssh/id_rsa -N ''
+      ansible.builtin.command: ssh-keygen -t rsa -b 4096 -f /root/.ssh/id_rsa -N ''
       args:
         creates: /root/.ssh/id_rsa
       when: not root_ssh_key.stat.exists
 
     - name: Fetch public keys from all nodes
-      slurp:
+      ansible.builtin.slurp:
         src: /root/.ssh/id_rsa.pub
       register: node_public_keys
 
     - name: Build authorized_keys for all nodes
-      set_fact:
-        all_public_keys: "{{ groups['proxmox_cluster_members'] | map('extract', hostvars) | map(attribute='node_public_keys') | map(attribute='content') | map('b64decode') | list }}"
-      run_once: true
+      ansible.builtin.set_fact:
+        all_public_keys: "{{
+          groups['proxmox_cluster_members']
+          | map('extract', hostvars)
+          | map(attribute='node_public_keys')
+          | map(attribute='content')
+          | map('b64decode')
+          | list
+          }}"
+      delegate_to: "{{ groups['proxmox_cluster_members'][0] }}"
 
     - name: Deploy authorized_keys to all nodes
-      authorized_key:
+      ansible.posix.authorized_key:
         user: root
         state: present
         key: "{{ item }}"
@@ -225,7 +228,7 @@
       when: item != inventory_hostname
 
     - name: Test SSH connectivity between nodes
-      command: "ssh -o BatchMode=yes -o StrictHostKeyChecking=no root@{{ hostvars[item].ansible_host }} hostname"
+      ansible.builtin.command: "ssh -o BatchMode=yes -o StrictHostKeyChecking=no root@{{ hostvars[item].ansible_host }} hostname"
       loop: "{{ groups['proxmox_cluster_members'] }}"
       when: item != inventory_hostname
       register: ssh_test
@@ -233,7 +236,7 @@
       failed_when: ssh_test.rc != 0
 
     - name: Display SSH test results
-      debug:
+      ansible.builtin.debug:
         msg: "{{ inventory_hostname }} can SSH to {{ item.item }}: {{ item.stdout }}"
       loop: "{{ ssh_test.results }}"
       when: not item.skipped | default(false)
@@ -290,7 +293,8 @@
             pvecm add {{ cluster_master_hostname }}
             --link0 {{ inventory_hostname }}.homelab.bredhauer.net
             --link1 {{ inventory_hostname }}.internal.bredhauer.net
-            --fingerprint {{ cluster_fingerprint.stdout }}
+            --fingerprint
+            {{ cluster_fingerprint.stdout }}
           args:
             stdin: "{{ PROXMOX_ROOT_PASSWORD }}"
           register: node_join
@@ -356,29 +360,41 @@
 - name: Configure QDevice
   hosts: proxmox_cluster_masters
   become: true
+
+  vars:
+  # QDevice configuration
+    qdevice_ip: "192.168.1.164"  # Your Raspberry Pi
+    qdevice_fingerprint: ""  # Will be populated after cluster creation
+
   tasks:
     - name: Verify cluster has 2+ nodes
-      shell: pvecm status | grep -c "Nodeid"
+      ansible.builtin.shell: |
+        set -o pipefail
+        pvecm status | grep -c "Nodeid"
       register: node_count
       changed_when: false
       failed_when: node_count.stdout | int < 2
 
     - name: Check if QDevice already configured
-      command: pvecm status
+      ansible.builtin.command: pvecm status
       register: qdevice_check
       changed_when: false
       failed_when: false
 
     - name: Setup QDevice
-      command: pvecm qdevice setup {{ qdevice_ip }}
+      ansible.builtin.command: pvecm qdevice setup {{ qdevice_ip }}
       when: "'Qdevice' not in qdevice_check.stdout"
       register: qdevice_setup
+      changed_when: qdevice_setup.rc == 0
+      failed_when: >
+        qdevice_setup.rc != 0 and
+        'already configured' not in qdevice_setup.stderr
 
     - name: Verify QDevice status
-      command: pvecm status
+      ansible.builtin.command: pvecm status
       register: final_status
       changed_when: false
 
     - name: Display final cluster status
-      debug:
+      ansible.builtin.debug:
         msg: "{{ final_status.stdout_lines }}"

@@ -218,7 +218,7 @@
         label: "{{ item.split()[-1] | default('key') }}"
 
     - name: Add all cluster nodes to known_hosts
-      known_hosts:
+      ansible.builtin.known_hosts:
         name: "{{ hostvars[item].ansible_host }}"
         key: "{{ lookup('pipe', 'ssh-keyscan -H ' + hostvars[item].ansible_host) }}"
         state: present
@@ -365,13 +365,26 @@
     qdevice_fingerprint: ""  # Will be populated after cluster creation
 
   tasks:
-    - name: Verify cluster has 2+ nodes
-      ansible.builtin.shell: |
-        set -o pipefail
-        pvecm status | grep -c "Nodeid"
-      register: node_count
+    - name: Get cluster node list
+      ansible.builtin.command: pvecm nodes
+      register: cluster_nodes
       changed_when: false
-      failed_when: node_count.stdout | int < 2
+
+    - name: Display cluster nodes
+      ansible.builtin.debug:
+        msg: "{{ cluster_nodes.stdout_lines }}"
+
+    - name: Count nodes in cluster
+      ansible.builtin.set_fact:
+        node_count: "{{ cluster_nodes.stdout_lines | select('search', '^\\s*\\d+') | list | length }}"
+
+    - name: Verify even number of nodes (required for QDevice)
+      ansible.builtin.assert:
+        that:
+          - (node_count | int) % 2 == 0
+          - (node_count | int) >= 2
+        fail_msg: "QDevice requires even number of nodes. Found: {{ node_count }} (odd number not supported)"
+        success_msg: "Cluster has {{ node_count }} nodes (even) - ready for QDevice"
 
     - name: Check if QDevice already configured
       ansible.builtin.command: pvecm status

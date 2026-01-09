@@ -83,15 +83,23 @@
         name: corosync-qnetd
         state: present
 
-    # --- Create dedicated qnetd user ---
-    - name: Create dedicated qnetd user
+    - name: Check if coroqnetd user already exists
+      ansible.builtin.getent:
+        database: passwd
+        key: coroqnetd
+      ignore_errors: true
+      register: coroqnetd_check
+
+    - name: Create dedicated qnetd user (if not exists)
       ansible.builtin.user:
         name: coroqnetd
         system: true
         shell: /sbin/nologin
         home: /var/lib/coroqnetd
         create_home: true
-
+        state: present
+      when: coroqnetd_check.failed  # Only runs if user doesn't exist
+      
     - name: Set qnetd directories ownership
       ansible.builtin.file:
         path: "{{ item }}"

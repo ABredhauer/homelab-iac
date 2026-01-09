@@ -401,6 +401,8 @@
         key: "{{ root_public_key }}"
         comment: "SSH key from {{ inventory_hostname }}"
       delegate_to: "{{ qdevice_ip }}"
+      vars:
+        ansible_user: ansible
       become: true
 
     - name: Test SSH connectivity to QDevice (non-interactive)

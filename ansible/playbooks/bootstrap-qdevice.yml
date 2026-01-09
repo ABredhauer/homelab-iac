@@ -2,14 +2,35 @@
 - name: Bootstrap Raspberry Pi for Ansible Management
   hosts: qdevice
   become: true
-  gather_facts: true
+  gather_facts: false
   remote_user: root
 
   vars:
+    ansible_user: root
+    ansible_ssh_pass: "{{ PROXMOX_ROOT_PASSWORD }}"  # From Variable Group
+    ansible_ssh_common_args: '-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o PreferredAuthentications=password -o PubkeyAuthentication=no'
+    semaphore_ssh_public_key: "{{ SEMAPHORE_SSH_PUBLIC_KEY }}"
     ansible_user_name: ansible
     github_user: "ABredhauer"
 
   tasks:
+    # ===== CONNECTION TEST =====
+    - name: Test if root connection is possible
+      ansible.builtin.command: echo "root_connection_works"
+      register: root_connection_test
+      ignore_errors: true
+      ignore_unreachable: true
+      changed_when: false
+
+    - name: Display connection test result
+      ansible.builtin.debug:
+        msg: |
+          Root connection test: {{ 'SUCCESS' if root_connection_test is not failed and root_connection_test is not unreachable else 'FAILED' }}
+          {% if root_connection_test is failed or root_connection_test is unreachable %}
+          This likely means ansible user is already configured.
+          Skipping initial setup tasks.
+          {% endif %}
+
     # --- Create ansible user ---
     - name: Create ansible user
       user:

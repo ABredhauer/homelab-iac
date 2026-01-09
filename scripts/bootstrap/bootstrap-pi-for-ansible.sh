@@ -10,6 +10,31 @@ echo "=================================================="
 echo "Pi First-Boot: $(date)"
 echo "=================================================="
 
+GITHUB_USER="ABredhauer"
+SSH_KEY_DIR="/root/.ssh"
+
+# Step 1: Configure SSH for Ansible access
+echo "[2/3] Configuring SSH access..."
+mkdir -p "${SSH_KEY_DIR}"
+chmod 700 "${SSH_KEY_DIR}"
+
+# Fetch SSH keys from GitHub
+if curl -fsSL --connect-timeout 10 --max-time 30 "https://github.com/${GITHUB_USER}.keys" > "${SSH_KEY_DIR}/authorized_keys"; then
+    chmod 600 "${SSH_KEY_DIR}/authorized_keys"
+    
+    # Verify keys were actually downloaded
+    if [[ -s "${SSH_KEY_DIR}/authorized_keys" ]]; then
+        keys_count=$(wc -l < "${SSH_KEY_DIR}/authorized_keys")
+        echo "✓ SSH keys configured (${keys_count} key(s))"
+    else
+        echo "✗ SSH keys file is empty"
+        exit 1
+    fi
+else
+    echo "✗ Failed to fetch SSH keys - aborting"
+    exit 1
+fi
+
 # Step 1: Enable SSH
 echo "[1/2] Enabling SSH..."
 systemctl enable --now ssh

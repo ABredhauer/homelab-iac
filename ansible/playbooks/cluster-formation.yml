@@ -173,7 +173,7 @@
 
 # ===== PLAY 2: PREPARE SSH KEY TRUST BETWEEN NODES =====
 - name: Prepare SSH Key Trust Between Proxmox Nodes
-  hosts: proxmox_cluster_all
+  hosts: proxmox_cluster_members
   become: true
   gather_facts: true
 

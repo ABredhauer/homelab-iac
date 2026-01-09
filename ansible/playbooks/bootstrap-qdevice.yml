@@ -7,7 +7,7 @@
 
   vars:
     ansible_user: root
-    ansible_ssh_pass: "{{ PROXMOX_ROOT_PASSWORD }}"  # From Variable Group
+    ansible_ssh_pass: "{{ PI_ROOT_PASSWORD }}"  # From Variable Group
     ansible_ssh_common_args: '-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o PreferredAuthentications=password -o PubkeyAuthentication=no'
     semaphore_ssh_public_key: "{{ SEMAPHORE_SSH_PUBLIC_KEY }}"
     ansible_user_name: ansible
@@ -33,7 +33,7 @@
 
     # --- Create ansible user ---
     - name: Create ansible user
-      user:
+      ansible.builtin.user:
         name: "{{ ansible_user_name }}"
         groups: sudo
         shell: /bin/bash
@@ -75,17 +75,17 @@
   tasks:
     # --- Install prerequisites ---
     - name: Update package cache
-      apt:
+      ansible.builtin.apt:
         update_cache: true
 
     - name: Install corosync-qnetd
-      apt:
+      ansible.builtin.apt:
         name: corosync-qnetd
         state: present
 
     # --- Create dedicated qnetd user ---
     - name: Create dedicated qnetd user
-      user:
+      ansible.builtin.user:
         name: coroqnetd
         system: true
         shell: /sbin/nologin
@@ -93,7 +93,7 @@
         create_home: true
 
     - name: Set qnetd directories ownership
-      file:
+      ansible.builtin.file:
         path: "{{ item }}"
         owner: coroqnetd
         group: coroqnetd
@@ -122,7 +122,7 @@
       notify: Reload SSHD
 
     - name: Copy Semaphore SSH public key to root's authorized_keys
-      authorized_key:
+      ansible.posix.authorized_key:
         user: root
         state: present
         key: "{{ semaphore_ssh_public_key }}"
@@ -139,19 +139,19 @@
         mode: "0644"
 
     - name: Enable and start corosync-qnetd
-      systemd:
+      ansible.builtin.systemd:
         name: corosync-qnetd
         enabled: true
         state: started
 
     - name: Verify qnetd is listening on port 5403
-      wait_for:
+      ansible.builtin.wait_for:
         port: 5403
         timeout: 30
         state: started
 
     - name: Create bootstrap completion marker
-      copy:
+      ansible.builtin.copy:
         content: |
           # Raspberry Pi Bootstrap Complete
           # Date: {{ ansible_date_time.iso8601 }}
@@ -163,6 +163,6 @@
 
   handlers:
     - name: Reload SSHD
-      systemd:
+      ansible.builtin.systemd:
         name: ssh
         state: reloaded

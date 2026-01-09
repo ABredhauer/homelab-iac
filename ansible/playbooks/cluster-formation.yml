@@ -35,8 +35,6 @@
             - {{ member.hostname }} ({{ member.mgmt_ip }})
           {% endfor %}
 
-          QDevice: {{ qdevice_ip }}
-
           This playbook will:
           1. Create cluster on master node
           2. Join member nodes to cluster

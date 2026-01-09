@@ -354,6 +354,65 @@
           ansible.builtin.debug:
             msg: "{{ final_node_status.stdout }}"
 
+
+# ===== NEW PLAY: Add Proxmox Nodes' SSH Keys to QDevice =====
+- name: Deploy Proxmox SSH Keys to QDevice
+  hosts: proxmox_cluster_members
+  become: true
+  gather_facts: true
+
+  vars:
+    qdevice_ip: "192.168.1.164"  # Your Raspberry Pi
+
+  tasks:
+    - name: Display QDevice SSH setup plan
+      ansible.builtin.debug:
+        msg: |
+          QDevice SSH Access Setup
+          ========================
+          QDevice: {{ qdevice_ip }}
+          Source Node: {{ inventory_hostname }}
+
+          This will deploy {{ inventory_hostname }}'s root SSH key to QDevice
+
+    - name: Ensure root SSH key exists on this node
+      ansible.builtin.stat:
+        path: /root/.ssh/id_rsa.pub
+      register: node_ssh_key
+
+    - name: Fail if SSH key is missing
+      ansible.builtin.fail:
+        msg: "Root SSH key missing on {{ inventory_hostname }}. Run SSH trust play first."
+      when: not node_ssh_key.stat.exists
+
+    - name: Read root's public key
+      ansible.builtin.slurp:
+        src: /root/.ssh/id_rsa.pub
+      register: root_public_key_raw
+
+    - name: Extract public key content
+      ansible.builtin.set_fact:
+        root_public_key: "{{ root_public_key_raw.content | b64decode | trim }}"
+
+    - name: Deploy this node's public key to QDevice
+      ansible.posix.authorized_key:
+        user: root
+        state: present
+        key: "{{ root_public_key }}"
+        comment: "SSH key from {{ inventory_hostname }}"
+      delegate_to: "{{ qdevice_ip }}"
+      become: true
+
+    - name: Test SSH connectivity to QDevice (non-interactive)
+      ansible.builtin.command: "ssh -o BatchMode=yes -o StrictHostKeyChecking=no root@{{ qdevice_ip }} hostname"
+      register: qdevice_ssh_test
+      changed_when: false
+      failed_when: qdevice_ssh_test.rc != 0
+
+    - name: Display QDevice SSH test result
+      ansible.builtin.debug:
+        msg: "✓ {{ inventory_hostname }} can SSH to QDevice: {{ qdevice_ssh_test.stdout }}"
+
 # PLAY 4: Add QDevice (ONLY AFTER 2+ NODES)
 - name: Configure QDevice
   hosts: proxmox_cluster_masters
@@ -395,7 +454,7 @@
     - name: Setup QDevice
       ansible.builtin.command: pvecm qdevice setup {{ qdevice_ip }}
       args:
-            stdin: "{{ PI_ROOT_PASSWORD }}"
+        stdin: "{{ PI_ROOT_PASSWORD }}"
       when: "'Qdevice' not in qdevice_check.stdout"
       register: qdevice_setup
       changed_when: qdevice_setup.rc == 0

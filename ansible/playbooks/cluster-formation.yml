@@ -394,6 +394,8 @@
 
     - name: Setup QDevice
       ansible.builtin.command: pvecm qdevice setup {{ qdevice_ip }}
+      args:
+            stdin: "{{ PI_ROOT_PASSWORD }}"
       when: "'Qdevice' not in qdevice_check.stdout"
       register: qdevice_setup
       changed_when: qdevice_setup.rc == 0

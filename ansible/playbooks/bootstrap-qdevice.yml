@@ -71,6 +71,7 @@
   vars:
     ansible_user_name: ansible
     github_user: "ABredhauer"
+    semaphore_ssh_public_key: "{{ SEMAPHORE_SSH_PUBLIC_KEY }}"
 
   tasks:
     # --- Install prerequisites ---
@@ -99,7 +100,7 @@
         create_home: true
         state: present
       when: coroqnetd_check.failed  # Only runs if user doesn't exist
-      
+
     - name: Set qnetd directories ownership
       ansible.builtin.file:
         path: "{{ item }}"

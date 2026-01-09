@@ -3,6 +3,7 @@
   hosts: qdevice
   become: true
   gather_facts: true
+  remote_user: root
 
   vars:
     ansible_user_name: ansible
@@ -32,13 +33,25 @@
         key: https://github.com/{{ github_user }}.keys
 
     - name: Configure sudo without password for ansible user
-      lineinfile:
+      ansible.builtin.lineinfile:
         path: /etc/sudoers.d/99-ansible
         line: "{{ ansible_user_name }} ALL=(ALL) NOPASSWD:ALL"
         create: true
         mode: "0440"
         state: present
 
+
+- name: Bootstrap Managed Pi for QDevice use
+  hosts: qdevice
+  become: true
+  gather_facts: true
+  remote_user: ansible
+
+  vars:
+    ansible_user_name: ansible
+    github_user: "ABredhauer"
+
+  tasks:
     # --- Install prerequisites ---
     - name: Update package cache
       apt:
@@ -71,7 +84,7 @@
 
     # --- Configure SSH for Proxmox qdevice setup ---
     - name: Temporarily enable root SSH access
-      lineinfile:
+      ansible.builtin.lineinfile:
         path: /etc/ssh/sshd_config
         regexp: '^#?PermitRootLogin'
         line: "PermitRootLogin prohibit-password"
@@ -80,7 +93,7 @@
       notify: Reload SSHD
 
     - name: Ensure PubkeyAuthentication is enabled
-      lineinfile:
+      ansible.builtin.lineinfile:
         path: /etc/ssh/sshd_config
         regexp: '^#?PubkeyAuthentication'
         line: "PubkeyAuthentication yes"
@@ -97,7 +110,7 @@
 
     # --- Configure corosync-qnetd service ---
     - name: Configure qnetd to run as non-root user
-      lineinfile:
+      ansible.builtin.lineinfile:
         path: /etc/default/corosync-qnetd
         regexp: '^#?COROSYNC_QNETD_RUNAS'
         line: "COROSYNC_QNETD_RUNAS=coroqnetd"

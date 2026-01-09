@@ -292,7 +292,7 @@
             --link1 {{ inventory_hostname }}.internal.bredhauer.net
             --fingerprint {{ cluster_fingerprint.stdout }}
           args:
-            stdin: {{ PROXMOX_ROOT_PASSWORD }}
+            stdin: "{{ PROXMOX_ROOT_PASSWORD }}"
           register: node_join
           changed_when: node_join.rc == 0
           failed_when: >

@@ -1,0 +1,134 @@
+---
+- name: Bootstrap Raspberry Pi for Ansible Management
+  hosts: qdevice
+  become: true
+  gather_facts: true
+
+  vars:
+    ansible_user_name: ansible
+    github_user: "ABredhauer"
+
+  tasks:
+    # --- Create ansible user ---
+    - name: Create ansible user
+      user:
+        name: "{{ ansible_user_name }}"
+        groups: sudo
+        shell: /bin/bash
+        create_home: true
+        state: present
+
+    - name: Add Semaphore SSH public key to ansible user
+      ansible.posix.authorized_key:
+        user: "{{ ansible_user_name }}"
+        state: present
+        key: "{{ semaphore_ssh_public_key }}"
+        comment: "Semaphore Automation Key"
+
+    - name: Also add GitHub keys to ansible user (for manual access)
+      ansible.posix.authorized_key:
+        user: "{{ ansible_user_name }}"
+        state: present
+        key: https://github.com/{{ github_user }}.keys
+
+    - name: Configure sudo without password for ansible user
+      lineinfile:
+        path: /etc/sudoers.d/99-ansible
+        line: "{{ ansible_user_name }} ALL=(ALL) NOPASSWD:ALL"
+        create: true
+        mode: "0440"
+        state: present
+
+    # --- Install prerequisites ---
+    - name: Update package cache
+      apt:
+        update_cache: true
+
+    - name: Install corosync-qnetd
+      apt:
+        name: corosync-qnetd
+        state: present
+
+    # --- Create dedicated qnetd user ---
+    - name: Create dedicated qnetd user
+      user:
+        name: coroqnetd
+        system: true
+        shell: /sbin/nologin
+        home: /var/lib/coroqnetd
+        create_home: true
+
+    - name: Set qnetd directories ownership
+      file:
+        path: "{{ item }}"
+        owner: coroqnetd
+        group: coroqnetd
+        mode: "0750"
+        state: directory
+      loop:
+        - /etc/corosync/qnetd
+        - /var/run/corosync-qnetd
+
+    # --- Configure SSH for Proxmox qdevice setup ---
+    - name: Temporarily enable root SSH access
+      lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: '^#?PermitRootLogin'
+        line: "PermitRootLogin prohibit-password"
+        state: present
+        backup: true
+      notify: Reload SSHD
+
+    - name: Ensure PubkeyAuthentication is enabled
+      lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: '^#?PubkeyAuthentication'
+        line: "PubkeyAuthentication yes"
+        state: present
+      notify: Reload SSHD
+
+    - name: Copy Semaphore SSH public key to root's authorized_keys
+      authorized_key:
+        user: root
+        state: present
+        key: "{{ semaphore_ssh_public_key }}"
+        manage_dir: true
+        comment: "Semaphore - for qdevice setup"
+
+    # --- Configure corosync-qnetd service ---
+    - name: Configure qnetd to run as non-root user
+      lineinfile:
+        path: /etc/default/corosync-qnetd
+        regexp: '^#?COROSYNC_QNETD_RUNAS'
+        line: "COROSYNC_QNETD_RUNAS=coroqnetd"
+        create: true
+        mode: "0644"
+
+    - name: Enable and start corosync-qnetd
+      systemd:
+        name: corosync-qnetd
+        enabled: true
+        state: started
+
+    - name: Verify qnetd is listening on port 5403
+      wait_for:
+        port: 5403
+        timeout: 30
+        state: started
+
+    - name: Create bootstrap completion marker
+      copy:
+        content: |
+          # Raspberry Pi Bootstrap Complete
+          # Date: {{ ansible_date_time.iso8601 }}
+          # Ansible User: {{ ansible_user_name }}
+          # Root SSH: Temporarily enabled for 'pvecm qdevice setup'
+          # Action Required: Run disable-qdevice-root.yml after Proxmox qdevice setup
+        dest: /opt/pi-bootstrap-complete
+        mode: "0644"
+
+  handlers:
+    - name: Reload SSHD
+      systemd:
+        name: ssh
+        state: reloaded

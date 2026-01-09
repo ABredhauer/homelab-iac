@@ -81,56 +81,56 @@
           ansible.builtin.debug:
             msg: "{{ cluster_status.stdout }}"
 
-    # ===== PHASE 3: GET CERTIFICATE FINGERPRINT =====
-    - name: Get cluster certificate fingerprint
-      block:
-        - name: Extract certificate fingerprint for joining nodes
-          ansible.builtin.shell: |
-            set -o pipefail
-            pvenode cert info --output-format json | jq -r '.[] | select(.filename=="pve-ssl.pem") | .fingerprint'
-          register: cluster_fingerprint
-          changed_when: false
+    # # ===== PHASE 3: GET CERTIFICATE FINGERPRINT =====
+    # - name: Get cluster certificate fingerprint
+    #   block:
+    #     - name: Extract certificate fingerprint for joining nodes
+    #       ansible.builtin.shell: |
+    #         set -o pipefail
+    #         pvenode cert info --output-format json | jq -r '.[] | select(.filename=="pve-ssl.pem") | .fingerprint'
+    #       register: cluster_fingerprint
+    #       changed_when: false
 
-        - name: Store fingerprint for member nodes
-          ansible.builtin.set_fact:
-            cluster_cert_fingerprint: "{{ cluster_fingerprint.stdout }}"
+    #     - name: Store fingerprint for member nodes
+    #       ansible.builtin.set_fact:
+    #         cluster_cert_fingerprint: "{{ cluster_fingerprint.stdout }}"
 
-        - name: Display fingerprint
-          ansible.builtin.debug:
-            msg: |
-              Certificate Fingerprint (for joining nodes):
-              {{ cluster_cert_fingerprint }}
+    #     - name: Display fingerprint
+    #       ansible.builtin.debug:
+    #         msg: |
+    #           Certificate Fingerprint (for joining nodes):
+    #           {{ cluster_cert_fingerprint }}
 
-    # ===== PHASE 4: SETUP QDEVICE =====
-    - name: Setup QDevice for external quorum voting
-      block:
-        - name: Install QDevice package
-          ansible.builtin.apt:
-            name: corosync-qdevice
-            state: present
+    # # ===== PHASE 4: SETUP QDEVICE =====
+    # - name: Setup QDevice for external quorum voting
+    #   block:
+    #     - name: Install QDevice package
+    #       ansible.builtin.apt:
+    #         name: corosync-qdevice
+    #         state: present
 
-        - name: Setup QDevice (requires SSH access to QDevice host)
-          ansible.builtin.command: |
-            pvecm qdevice setup {{ qdevice_ip }}
-          register: qdevice_setup
-          changed_when: qdevice_setup.rc == 0 and 'already configured' not in qdevice_setup.stderr
-          failed_when: >
-            qdevice_setup.rc != 0 and
-            'already configured' not in qdevice_setup.stderr
-          ignore_errors: true
+    #     - name: Setup QDevice (requires SSH access to QDevice host)
+    #       ansible.builtin.command: |
+    #         pvecm qdevice setup {{ qdevice_ip }}
+    #       register: qdevice_setup
+    #       changed_when: qdevice_setup.rc == 0 and 'already configured' not in qdevice_setup.stderr
+    #       failed_when: >
+    #         qdevice_setup.rc != 0 and
+    #         'already configured' not in qdevice_setup.stderr
+    #       ignore_errors: true
 
-        - name: Wait for QDevice to register
-          ansible.builtin.pause:
-            seconds: 10
+    #     - name: Wait for QDevice to register
+    #       ansible.builtin.pause:
+    #         seconds: 10
 
-        - name: Verify QDevice registration
-          ansible.builtin.command: pvecm status
-          register: qdevice_status
-          changed_when: false
+    #     - name: Verify QDevice registration
+    #       ansible.builtin.command: pvecm status
+    #       register: qdevice_status
+    #       changed_when: false
 
-        - name: Display final cluster status with QDevice
-          ansible.builtin.debug:
-            msg: "{{ qdevice_status.stdout }}"
+    #     - name: Display final cluster status with QDevice
+    #       ansible.builtin.debug:
+    #         msg: "{{ qdevice_status.stdout }}"
 
     # ===== FINAL VERIFICATION =====
     - name: Final cluster health check
@@ -171,7 +171,7 @@
 
               Next: Configure shared storage (NFS/Ceph)
 
-# ===== PLAY 1.5: PREPARE SSH KEY TRUST BETWEEN NODES =====
+# ===== PLAY 2: PREPARE SSH KEY TRUST BETWEEN NODES =====
 - name: Prepare SSH Key Trust Between Proxmox Nodes
   hosts: proxmox_cluster_all
   become: true
@@ -239,7 +239,7 @@
       when: not item.skipped | default(false)
 
 
-# ===== PLAY 2: Join Member Nodes to Cluster =====
+# ===== PLAY 3: Join Member Nodes to Cluster =====
 - name: Join Member Nodes to Cluster
   hosts: proxmox_cluster_members
   serial: 1  # Join nodes one at a time to avoid issues
@@ -349,3 +349,34 @@
         - name: Display final node status
           ansible.builtin.debug:
             msg: "{{ final_node_status.stdout }}"
+
+# PLAY 4: Add QDevice (ONLY AFTER 2+ NODES)
+- name: Configure QDevice
+  hosts: proxmox_cluster_masters
+  become: true
+  tasks:
+    - name: Verify cluster has 2+ nodes
+      shell: pvecm status | grep -c "Nodeid"
+      register: node_count
+      changed_when: false
+      failed_when: node_count.stdout | int < 2
+
+    - name: Check if QDevice already configured
+      command: pvecm status
+      register: qdevice_check
+      changed_when: false
+      failed_when: false
+
+    - name: Setup QDevice
+      command: pvecm qdevice setup {{ qdevice_ip }}
+      when: "'Qdevice' not in qdevice_check.stdout"
+      register: qdevice_setup
+
+    - name: Verify QDevice status
+      command: pvecm status
+      register: final_status
+      changed_when: false
+
+    - name: Display final cluster status
+      debug:
+        msg: "{{ final_status.stdout_lines }}"

@@ -472,7 +472,7 @@
           ✓ QDevice SSH Access Fully Configured!
           ======================================
 
-          All {{ groups['proxmox_cluster_all'] | length }} Proxmox nodes can now SSH to QDevice.
+          All {{ groups['proxmox_cluster_members'] | length }} Proxmox nodes can now SSH to QDevice.
           Ready for: pvecm qdevice setup
 
 # PLAY 4: Add QDevice (ONLY AFTER 2+ NODES)

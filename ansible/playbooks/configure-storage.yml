@@ -1,0 +1,520 @@
+# ansible/playbooks/configure-storage.yml
+# Phase 3: Storage Configuration
+# - Mount NFS shares from Synology NAS
+# - Configure ZFS replication between cluster nodes (5-minute interval)
+# - Set up backup schedule (4-week retention)
+# - Add memory monitoring (no swap configuration)
+
+---
+- name: Configure NFS Storage on All Cluster Nodes
+  hosts: proxmox_cluster_members
+  become: true
+  gather_facts: true
+  strategy: linear
+
+  vars:
+    nas_ip: "192.168.1.25"
+
+    nfs_shares:
+      backup:
+        export_path: "/volume1/backups"
+        mount_point: "/mnt/pve/synology-backup"
+        storage_id: "synology-backup"
+        content_types: "backup"
+        mount_options: "rw,async,hard,nolock"
+
+      shared:
+        export_path: "/volume1/homelab-shared"
+        mount_point: "/mnt/pve/synology-shared"
+        storage_id: "synology-shared"
+        content_types: "iso,vztmpl,snippets"
+        mount_options: "rw,sync,hard,nolock"
+
+      vm_storage:
+        export_path: "/volume1/homelab-data"
+        mount_point: "/mnt/pve/synology-vm-storage"
+        storage_id: "synology-vm-storage"
+        content_types: "images,rootdir"
+        mount_options: "rw,sync,hard,nolock"
+
+  tasks:
+    - name: Display storage configuration plan
+      ansible.builtin.debug:
+        msg: |
+          Phase 3: Storage Configuration
+          ==============================
+          Node: {{ inventory_hostname }}
+
+          NFS Mounts (from {{ nas_ip }}):
+            1. {{ nfs_shares.backup.export_path }} -> {{ nfs_shares.backup.storage_id }}
+            2. {{ nfs_shares.shared.export_path }} -> {{ nfs_shares.shared.storage_id }}
+            3. {{ nfs_shares.vm_storage.export_path }} -> {{ nfs_shares.vm_storage.storage_id }}
+
+          ZFS Replication: 5-minute interval between nodes
+          Backup Schedule: Weekly (Sunday 2AM), 4-week retention
+
+    # ===== PHASE 1: INSTALL NFS CLIENT =====
+    - name: Install NFS client packages
+      ansible.builtin.apt:
+        name:
+          - nfs-common
+          - nfs4-acl-tools
+        state: present
+        update_cache: true
+
+    # ===== PHASE 2: CREATE MOUNT POINTS =====
+    - name: Create mount point directories
+      ansible.builtin.file:
+        path: "{{ item.value.mount_point }}"
+        state: directory
+        mode: '0755'
+      loop: "{{ nfs_shares | dict2items }}"
+      loop_control:
+        label: "{{ item.value.mount_point }}"
+
+    # ===== PHASE 3: MOUNT NFS SHARES =====
+    - name: Check if NFS shares are already mounted
+      ansible.builtin.command: mountpoint -q {{ item.value.mount_point }}
+      register: mount_check
+      loop: "{{ nfs_shares | dict2items }}"
+      loop_control:
+        label: "{{ item.value.mount_point }}"
+      failed_when: false
+      changed_when: false
+
+    - name: Mount NFS shares
+      ansible.posix.mount:
+        path: "{{ item.value.mount_point }}"
+        src: "{{ nas_ip }}:{{ item.value.export_path }}"
+        fstype: nfs
+        opts: "{{ item.value.mount_options }}"
+        state: mounted
+      loop: "{{ nfs_shares | dict2items }}"
+      loop_control:
+        label: "{{ item.value.storage_id }}"
+
+    - name: Verify NFS mounts are accessible
+      ansible.builtin.command: ls -la {{ item.value.mount_point }}
+      register: mount_verify
+      loop: "{{ nfs_shares | dict2items }}"
+      loop_control:
+        label: "{{ item.value.mount_point }}"
+      changed_when: false
+
+    - name: Display mount verification results
+      ansible.builtin.debug:
+        msg: "{{ item.stdout_lines }}"
+      loop: "{{ mount_verify.results }}"
+      loop_control:
+        label: "{{ item.item.value.storage_id }}"
+
+    # ===== PHASE 4: CREATE SUBDIRECTORIES ON NFS SHARES =====
+    - name: Create proxmox subdirectory in backup share
+      ansible.builtin.file:
+        path: "{{ nfs_shares.backup.mount_point }}/proxmox"
+        state: directory
+        mode: '0755'
+      delegate_to: "{{ groups['proxmox_cluster_members'][0] }}"
+      run_once: true
+
+    - name: Create template directories in shared storage
+      ansible.builtin.file:
+        path: "{{ nfs_shares.shared.mount_point }}/{{ item }}"
+        state: directory
+        mode: '0755'
+      loop:
+        - template/iso
+        - template/cache
+        - snippets
+      delegate_to: "{{ groups['proxmox_cluster_members'][0] }}"
+      run_once: true
+
+    # ===== PHASE 5: ADD NFS STORAGE TO PROXMOX =====
+    - name: Add backup storage to Proxmox
+      ansible.builtin.command: >
+        pvesm add nfs {{ nfs_shares.backup.storage_id }}
+        --server {{ nas_ip }}
+        --export {{ nfs_shares.backup.export_path }}
+        --path {{ nfs_shares.backup.mount_point }}
+        --content {{ nfs_shares.backup.content_types }}
+        --options {{ nfs_shares.backup.mount_options }}
+      register: storage_backup_add
+      changed_when: storage_backup_add.rc == 0
+      failed_when: >
+        storage_backup_add.rc != 0 and
+        'already exists' not in storage_backup_add.stderr
+      run_once: true
+
+    - name: Add shared resources storage to Proxmox
+      ansible.builtin.command: >
+        pvesm add nfs {{ nfs_shares.shared.storage_id }}
+        --server {{ nas_ip }}
+        --export {{ nfs_shares.shared.export_path }}
+        --path {{ nfs_shares.shared.mount_point }}
+        --content {{ nfs_shares.shared.content_types }}
+        --options {{ nfs_shares.shared.mount_options }}
+      register: storage_shared_add
+      changed_when: storage_shared_add.rc == 0
+      failed_when: >
+        storage_shared_add.rc != 0 and
+        'already exists' not in storage_shared_add.stderr
+      run_once: true
+
+    - name: Add VM storage to Proxmox
+      ansible.builtin.command: >
+        pvesm add nfs {{ nfs_shares.vm_storage.storage_id }}
+        --server {{ nas_ip }}
+        --export {{ nfs_shares.vm_storage.export_path }}
+        --path {{ nfs_shares.vm_storage.mount_point }}
+        --content {{ nfs_shares.vm_storage.content_types }}
+        --options {{ nfs_shares.vm_storage.mount_options }}
+      register: storage_vm_add
+      changed_when: storage_vm_add.rc == 0
+      failed_when: >
+        storage_vm_add.rc != 0 and
+        'already exists' not in storage_vm_add.stderr
+      run_once: true
+
+    - name: Verify Proxmox storage configuration
+      ansible.builtin.command: pvesm status
+      register: storage_status
+      changed_when: false
+
+    - name: Display storage status
+      ansible.builtin.debug:
+        msg: "{{ storage_status.stdout_lines }}"
+
+    # ===== PHASE 6: CONFIGURE ZFS PROPERTIES =====
+    - name: Optimize ZFS dataset for VM storage
+      ansible.builtin.command: "{{ item }}"
+      loop:
+        - "zfs set compression=lz4 rpool/data"
+        - "zfs set atime=off rpool/data"
+        - "zfs set recordsize=128k rpool/data"
+        - "zfs set xattr=sa rpool/data"
+      register: zfs_config
+      changed_when: zfs_config.rc == 0
+      failed_when: >
+        zfs_config.rc != 0 and
+        'property is already set' not in zfs_config.stderr
+
+    # ===== PHASE 7: MEMORY MONITORING (NO SWAP) =====
+    - name: Install memory monitoring tools
+      ansible.builtin.apt:
+        name:
+          - sysstat
+          - atop
+        state: present
+
+    - name: Create memory monitoring script
+      ansible.builtin.copy:
+        dest: /usr/local/bin/check-memory-pressure.sh
+        mode: '0755'
+        content: |
+          #!/bin/bash
+          # Memory pressure monitoring (no swap configured)
+
+          TOTAL=$(free -m | awk '/^Mem:/ {print $2}')
+          USED=$(free -m | awk '/^Mem:/ {print $3}')
+          PERCENT=$((USED * 100 / TOTAL))
+
+          if [ $PERCENT -gt 90 ]; then
+            echo "WARNING: Memory usage at ${PERCENT}%" | wall
+            logger -p user.warning -t memory-check "High memory pressure: ${PERCENT}% used (${USED}MB/${TOTAL}MB)"
+
+            # Log top 5 memory consumers
+            ps aux --sort=-%mem | head -n 6 | logger -p user.info -t memory-check
+          fi
+
+    - name: Schedule memory monitoring (every 5 minutes)
+      ansible.builtin.cron:
+        name: "Memory pressure monitoring"
+        minute: "*/5"
+        job: "/usr/local/bin/check-memory-pressure.sh"
+        user: root
+
+    - name: Create memory check alias in bashrc
+      ansible.builtin.lineinfile:
+        path: /root/.bashrc
+        line: "alias memcheck='free -h && echo && echo \"Top 10 memory consumers:\" && ps aux --sort=-%mem | head -n 11'"
+        state: present
+
+    # ===== PHASE 8: CREATE COMPLETION MARKER =====
+    - name: Create storage configuration completion marker
+      ansible.builtin.copy:
+        dest: /opt/storage-config-complete
+        content: |
+          Storage Configuration Complete
+          ==============================
+          Node: {{ inventory_hostname }}
+          Timestamp: {{ ansible_date_time.iso8601 }}
+
+          NFS Storage Configured:
+            - {{ nfs_shares.backup.storage_id }} ({{ nfs_shares.backup.export_path }})
+            - {{ nfs_shares.shared.storage_id }} ({{ nfs_shares.shared.export_path }})
+            - {{ nfs_shares.vm_storage.storage_id }} ({{ nfs_shares.vm_storage.export_path }})
+
+          ZFS Configuration:
+            - Pool: rpool
+            - Compression: lz4
+            - Record size: 128k
+            - Atime: off
+
+          Memory Monitoring:
+            - Enabled (no swap configured)
+            - Check interval: 5 minutes
+            - Alert threshold: 90%
+        mode: '0644'
+
+
+# ===== PLAY 2: Configure ZFS Replication Between Cluster Nodes =====
+- name: Configure ZFS Replication (Master Node Only)
+  hosts: proxmox_cluster_masters
+  become: true
+  gather_facts: true
+  strategy: linear
+
+  vars:
+    replication_interval: 5  # minutes
+
+  tasks:
+    - name: Display replication configuration plan
+      ansible.builtin.debug:
+        msg: |
+          ZFS Replication Configuration
+          ==============================
+          Master: {{ inventory_hostname }}
+          Members: {{ groups['proxmox_cluster_members'] | join(', ') }}
+          Interval: Every {{ replication_interval }} minutes
+
+          Replication Jobs:
+          {% for member in groups['proxmox_cluster_members'] %}
+            - {{ inventory_hostname }} -> {{ member }} (every {{ replication_interval }} min)
+            - {{ member }} -> {{ inventory_hostname }} (every {{ replication_interval }} min)
+          {% endfor %}
+
+    - name: Get list of cluster members
+      ansible.builtin.command: pvecm nodes
+      register: cluster_nodes
+      changed_when: false
+
+    - name: Display cluster nodes
+      ansible.builtin.debug:
+        msg: "{{ cluster_nodes.stdout_lines }}"
+
+    - name: Configure replication from master to members
+      ansible.builtin.shell: |
+        set -o pipefail
+        pvesh create /cluster/replication \
+          --id replication-{{ inventory_hostname }}-to-{{ item }} \
+          --type zfs \
+          --target {{ item }} \
+          --schedule "*\/{{ replication_interval }}" \
+          --rate 100 \
+          --comment "Automated replication from {{ inventory_hostname }} to {{ item }}"
+      args:
+        executable: /bin/bash
+      loop: "{{ groups['proxmox_cluster_members'] }}"
+      register: repl_master_to_member
+      changed_when: repl_master_to_member.rc == 0
+      failed_when: >
+        repl_master_to_member.rc != 0 and
+        'already exists' not in repl_master_to_member.stderr
+
+    - name: Configure replication from members to master
+      ansible.builtin.shell: |
+        set -o pipefail
+        pvesh create /cluster/replication \
+          --id replication-{{ item }}-to-{{ inventory_hostname }} \
+          --type zfs \
+          --source {{ item }} \
+          --target {{ inventory_hostname }} \
+          --schedule "*\/{{ replication_interval }}" \
+          --rate 100 \
+          --comment "Automated replication from {{ item }} to {{ inventory_hostname }}"
+      args:
+        executable: /bin/bash
+      loop: "{{ groups['proxmox_cluster_members'] }}"
+      register: repl_member_to_master
+      changed_when: repl_member_to_master.rc == 0
+      failed_when: >
+        repl_member_to_master.rc != 0 and
+        'already exists' not in repl_member_to_master.stderr
+
+    - name: Verify replication configuration
+      ansible.builtin.command: pvesh get /cluster/replication
+      register: replication_status
+      changed_when: false
+
+    - name: Display replication status
+      ansible.builtin.debug:
+        msg: "{{ replication_status.stdout }}"
+
+
+# ===== PLAY 3: Configure Backup Schedule =====
+- name: Configure Backup Schedule (Master Node Only)
+  hosts: proxmox_cluster_masters
+  become: true
+  gather_facts: true
+  strategy: linear
+
+  vars:
+    backup_schedule:
+      storage: "synology-backup"
+      schedule: "sun 02:00"
+      retention: 4
+      mode: "snapshot"
+      compression: "zstd"
+      notification_mode: "auto"
+
+  tasks:
+    - name: Display backup configuration plan
+      ansible.builtin.debug:
+        msg: |
+          Backup Configuration
+          ====================
+          Storage: {{ backup_schedule.storage }}
+          Schedule: {{ backup_schedule.schedule }} (Weekly, Sunday 2AM)
+          Retention: {{ backup_schedule.retention }} weeks
+          Mode: {{ backup_schedule.mode }}
+          Compression: {{ backup_schedule.compression }}
+
+    - name: Check if backup job already exists
+      ansible.builtin.shell: |
+        set -o pipefail
+        pvesh get /cluster/backup | grep -q "{{ backup_schedule.storage }}"
+      args:
+        executable: /bin/bash
+      register: backup_check
+      changed_when: false
+      failed_when: false
+
+    - name: Create backup job for all VMs
+      ansible.builtin.command: >
+        pvesh create /cluster/backup
+        --storage {{ backup_schedule.storage }}
+        --schedule "{{ backup_schedule.schedule }}"
+        --mode {{ backup_schedule.mode }}
+        --compress {{ backup_schedule.compression }}
+        --all 1
+        --enabled 1
+        --mailnotification {{ backup_schedule.notification_mode }}
+        --prune-backups "keep-last={{ backup_schedule.retention }}"
+      register: backup_create
+      when: backup_check.rc != 0
+      changed_when: backup_create.rc == 0
+
+    - name: Verify backup job configuration
+      ansible.builtin.command: pvesh get /cluster/backup
+      register: backup_status
+      changed_when: false
+
+    - name: Display backup job status
+      ansible.builtin.debug:
+        msg: "{{ backup_status.stdout }}"
+
+    - name: Create backup configuration completion marker
+      ansible.builtin.copy:
+        dest: /opt/backup-config-complete
+        content: |
+          Backup Configuration Complete
+          =============================
+          Timestamp: {{ ansible_date_time.iso8601 }}
+
+          Backup Schedule:
+            Storage: {{ backup_schedule.storage }}
+            Schedule: {{ backup_schedule.schedule }}
+            Retention: {{ backup_schedule.retention }} backups
+            Mode: {{ backup_schedule.mode }}
+            Compression: {{ backup_schedule.compression }}
+
+          All VMs will be backed up weekly to {{ backup_schedule.storage }}
+          Backups are stored in: /volume1/backups/proxmox/dump/
+        mode: '0644'
+
+
+# ===== PLAY 4: Final Verification =====
+- name: Final Storage and Replication Verification
+  hosts: all
+  become: true
+  gather_facts: true
+
+  tasks:
+    - name: Verify all storage is online
+      ansible.builtin.command: pvesm status
+      register: final_storage_check
+      changed_when: false
+
+    - name: Verify ZFS pool health
+      ansible.builtin.command: zpool status rpool
+      register: final_zfs_check
+      changed_when: false
+
+    - name: Verify NFS mounts
+      ansible.builtin.command: df -h | grep synology
+      register: final_nfs_check
+      changed_when: false
+      failed_when: false
+
+    - name: Display final verification results
+      ansible.builtin.debug:
+        msg: |
+          Storage Verification Results
+          ============================
+          Node: {{ inventory_hostname }}
+
+          Proxmox Storage Status:
+          {{ final_storage_check.stdout }}
+
+          ZFS Pool Status:
+          {{ final_zfs_check.stdout }}
+
+          NFS Mounts:
+          {{ final_nfs_check.stdout }}
+
+    - name: Create phase 3 completion marker
+      ansible.builtin.copy:
+        dest: /opt/phase3-complete
+        content: |
+          Phase 3: Storage Configuration Complete
+          ========================================
+          Node: {{ inventory_hostname }}
+          Completed: {{ ansible_date_time.iso8601 }}
+
+          Configuration Summary:
+            - NFS storage mounted (3 shares)
+            - ZFS replication configured (5-minute interval)
+            - Backup schedule configured (weekly, 4-week retention)
+            - Memory monitoring enabled (no swap)
+
+          Storage Available:
+            - local-zfs: ~857GB (local VM storage with replication)
+            - synology-backup: Backups only
+            - synology-shared: ISO, templates, snippets
+            - synology-vm-storage: HA VMs (instant failover)
+
+          Next Steps:
+            - Phase 4: Monitoring (Prometheus + Grafana)
+            - Phase 5: VM Templates and Workloads
+        mode: '0644'
+
+    - name: Display completion message
+      ansible.builtin.debug:
+        msg: |
+
+          Phase 3 Storage Configuration Complete!
+          ========================================
+
+          All nodes configured with:
+            - NFS storage (3 mounts from Synology)
+            - ZFS replication (5-minute interval)
+            - Backup schedule (Sunday 2AM, 4-week retention)
+            - Memory monitoring (5-minute checks)
+
+          Storage Summary:
+            - Local ZFS: ~857GB per node (replicated for HA)
+            - NFS Backup: /volume1/backups/proxmox
+            - NFS Shared: /volume1/homelab-shared (ISO, templates)
+            - NFS VM Storage: /volume1/homelab-data (instant failover VMs)
+
+          Ready for: Phase 4 (Monitoring & Observability)

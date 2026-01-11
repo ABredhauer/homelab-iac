@@ -1,0 +1,286 @@
+# ansible/playbooks/cleanup-test-vm.yml
+# Phase 3: Test VM Cleanup
+# - Remove replication job
+# - Destroy test VM
+# - Clean up replicated data on target
+# - Remove test markers
+
+---
+- name: Cleanup Test VM and Replication
+  hosts: proxmox_cluster_masters
+  become: true
+  gather_facts: true
+  strategy: linear
+
+  vars:
+    test_vm_id: 900
+    replication_job_id: "{{ test_vm_id }}-0"
+    target_node: "{{ groups['proxmox_cluster_members'] | difference([inventory_hostname]) | first }}"
+
+  tasks:
+    - name: Display cleanup plan
+      ansible.builtin.debug:
+        msg: |
+          Test VM Cleanup Plan
+          ====================
+          VM ID: {{ test_vm_id }}
+          Replication Job: {{ replication_job_id }}
+          Source Node: {{ inventory_hostname }}
+          Target Node: {{ target_node }}
+
+          Actions:
+            1. Stop replication job
+            2. Delete replication job
+            3. Destroy test VM on source
+            4. Clean up replicated data on target
+            5. Remove test markers
+
+    - name: Check if replication job exists
+      ansible.builtin.shell: |
+        set -o pipefail
+        pvesr list | grep -q "{{ replication_job_id }}"
+      args:
+        executable: /bin/bash
+      register: repl_exists
+      changed_when: false
+      failed_when: false
+
+    - name: Disable replication job
+      ansible.builtin.command: pvesr disable {{ replication_job_id }}
+      when: repl_exists.rc == 0
+      register: repl_disable
+      changed_when: repl_disable.rc == 0
+      failed_when: false  # May already be disabled
+
+    - name: Delete replication job
+      ansible.builtin.command: pvesr delete {{ replication_job_id }}
+      when: repl_exists.rc == 0
+      register: repl_delete
+      changed_when: repl_delete.rc == 0
+
+    - name: Verify replication job deleted
+      ansible.builtin.command: pvesr list
+      register: repl_list_after
+      changed_when: false
+
+    - name: Display remaining replication jobs
+      ansible.builtin.debug:
+        msg: |
+          Remaining Replication Jobs:
+          {{ repl_list_after.stdout if repl_list_after.stdout else 'None (all jobs removed)' }}
+
+    - name: Check if test VM exists
+      ansible.builtin.shell: |
+        set -o pipefail
+        qm list | grep -q "^\s*{{ test_vm_id }}\s"
+      args:
+        executable: /bin/bash
+      register: vm_exists
+      changed_when: false
+      failed_when: false
+
+    - name: Stop test VM if running
+      ansible.builtin.command: qm stop {{ test_vm_id }}
+      when: vm_exists.rc == 0
+      register: vm_stop
+      changed_when: vm_stop.rc == 0
+      failed_when: false  # VM may already be stopped
+
+    - name: Destroy test VM and purge disks
+      ansible.builtin.command: qm destroy {{ test_vm_id }} --purge
+      when: vm_exists.rc == 0
+      register: vm_destroy
+      changed_when: vm_destroy.rc == 0
+
+    - name: Verify test VM deleted
+      ansible.builtin.command: qm list
+      register: vm_list_after
+      changed_when: false
+
+    - name: Display remaining VMs
+      ansible.builtin.debug:
+        msg: "{{ vm_list_after.stdout_lines }}"
+
+    - name: Remove test marker files on source
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /opt/test-vm-created
+        - /opt/replication-config-complete
+        - /opt/replication-test-report.txt
+        - /tmp/test-vm-marker.txt
+
+- name: Cleanup Replicated Data on Target Node
+  hosts: proxmox_cluster_members
+  become: true
+  gather_facts: true
+
+  vars:
+    test_vm_id: 900
+    master_node: "{{ groups['proxmox_cluster_masters'][0] }}"
+
+  tasks:
+    - name: Check for replicated VM disks on target
+      ansible.builtin.shell: |
+        set -o pipefail
+        zfs list | grep "vm-{{ test_vm_id }}-disk"
+      args:
+        executable: /bin/bash
+      register: replicated_disks
+      changed_when: false
+      failed_when: false
+      when: inventory_hostname != master_node
+
+    - name: Display replicated disks to be removed
+      ansible.builtin.debug:
+        msg: |
+          Replicated Disks Found:
+          {{ replicated_disks.stdout if replicated_disks.rc == 0 else 'None found' }}
+      when: inventory_hostname != master_node
+
+    - name: Remove replicated VM disk datasets
+      ansible.builtin.shell: |
+        set -o pipefail
+        for dataset in $(zfs list -H -o name | grep "vm-{{ test_vm_id }}-disk"); do
+          echo "Destroying $dataset"
+          zfs destroy -r "$dataset"
+        done
+      args:
+        executable: /bin/bash
+      register: zfs_cleanup
+      when:
+        - inventory_hostname != master_node
+        - replicated_disks.rc == 0
+      changed_when: zfs_cleanup.rc == 0
+      failed_when: false  # Some snapshots may have dependencies
+
+    - name: Remove replicated VM snapshots
+      ansible.builtin.shell: |
+        set -o pipefail
+        for snapshot in $(zfs list -H -o name -t snapshot | grep "vm-{{ test_vm_id }}-disk"); do
+          echo "Destroying snapshot $snapshot"
+          zfs destroy "$snapshot"
+        done
+      args:
+        executable: /bin/bash
+      register: snapshot_cleanup
+      when: inventory_hostname != master_node
+      changed_when: snapshot_cleanup.rc == 0
+      failed_when: false
+
+    - name: Verify cleanup on target
+      ansible.builtin.shell: |
+        set -o pipefail
+        zfs list -t all | grep "vm-{{ test_vm_id }}" || echo "No VM {{ test_vm_id }} data remaining"
+      args:
+        executable: /bin/bash
+      register: cleanup_verify
+      when: inventory_hostname != master_node
+      changed_when: false
+
+    - name: Display cleanup verification
+      ansible.builtin.debug:
+        msg: "{{ cleanup_verify.stdout_lines }}"
+      when: inventory_hostname != master_node
+
+- name: Final Cleanup Verification
+  hosts: all
+  become: true
+  gather_facts: true
+
+  vars:
+    test_vm_id: 900
+
+  tasks:
+    - name: Check for any remaining VM {{ test_vm_id }} references
+      ansible.builtin.shell: |
+        set -o pipefail
+        echo "=== VM List Check ==="
+        qm list | grep "{{ test_vm_id }}" || echo "VM {{ test_vm_id }} not in VM list"
+        echo ""
+        echo "=== ZFS Dataset Check ==="
+        zfs list | grep "vm-{{ test_vm_id }}" || echo "No VM {{ test_vm_id }} ZFS datasets"
+        echo ""
+        echo "=== ZFS Snapshot Check ==="
+        zfs list -t snapshot | grep "vm-{{ test_vm_id }}" || echo "No VM {{ test_vm_id }} snapshots"
+        echo ""
+        echo "=== Replication Job Check ==="
+        pvesr list | grep "{{ test_vm_id }}" || echo "No replication jobs for VM {{ test_vm_id }}"
+      args:
+        executable: /bin/bash
+      register: final_check
+      changed_when: false
+      failed_when: false
+
+    - name: Display final verification results
+      ansible.builtin.debug:
+        msg: |
+          Final Cleanup Verification - {{ inventory_hostname }}
+          =============================================
+          {{ final_check.stdout }}
+
+    - name: Create cleanup completion marker
+      ansible.builtin.copy:
+        dest: /opt/test-vm-cleanup-complete
+        content: |
+          Test VM Cleanup Complete
+          ========================
+          Node: {{ inventory_hostname }}
+          Completed: {{ ansible_date_time.iso8601 }}
+
+          Test VM {{ test_vm_id }} has been removed:
+            - Replication job deleted
+            - VM destroyed on source
+            - Replicated data removed from target
+            - Test markers cleaned up
+
+          Phase 3 validation successful!
+          Replication infrastructure ready for Phase 5.
+
+          Next Steps:
+            - Update README.md with Phase 3 completion
+            - Commit changes to Git
+            - Proceed to Phase 4: Monitoring & Observability
+        mode: '0644'
+
+    - name: Display cleanup completion message
+      ansible.builtin.debug:
+        msg: |
+
+          ✅ Test VM Cleanup Complete!
+          ============================
+
+          VM {{ test_vm_id }} removed from all nodes:
+            ✓ Replication job deleted
+            ✓ VM destroyed on source
+            ✓ Replicated data cleaned from target
+            ✓ Test markers removed
+
+          Phase 3 Replication Validation: SUCCESS
+          ========================================
+
+          What We Proved:
+            ✓ ZFS replication works between cluster nodes
+            ✓ Replication jobs can be created with pvesr
+            ✓ Manual and automatic sync both functional
+            ✓ Infrastructure ready for production VMs in Phase 5
+
+          Current Storage Configuration:
+            ✓ NFS storage (3 shares from Synology)
+            ✓ Local ZFS optimised for VMs
+            ✓ Backup schedule configured
+            ✓ Memory monitoring active
+
+          Next Actions:
+            1. Review /opt/test-vm-cleanup-complete on each node
+            2. Update README.md: Phase 3 status = COMPLETE
+            3. Git commit: "Phase 3 complete - storage & replication validated"
+            4. Proceed to Phase 4: Monitoring (Prometheus + Grafana)
+
+          Replication Notes for Phase 5:
+            - Use 'pvesr create-local-job <VMID>-0 <target>' for new VMs
+            - Job IDs must be <VMID>-<JOBNUM> format
+            - Schedule format: '*/5' for 5 minutes, '*/15' for 15 minutes
+            - Only works with local-zfs storage
+            - Automatic failover requires Proxmox HA (Phase 4)

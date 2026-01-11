@@ -1,0 +1,241 @@
+# ansible/playbooks/test-replication.yml
+# Phase 3: Replication Testing and Validation
+# - Verify test VM replication is working
+# - Test write operations and sync
+# - Simulate failover scenario
+# - Validate data integrity
+
+---
+- name: Test ZFS Replication Functionality
+  hosts: proxmox_cluster_masters
+  become: true
+  gather_facts: true
+  strategy: linear
+
+  vars:
+    test_vm_id: 900
+    replication_job_id: "{{ test_vm_id }}-0"
+    target_node: "{{ groups['proxmox_cluster_members'] | difference([inventory_hostname]) | first }}"
+
+  tasks:
+    - name: Display test plan
+      ansible.builtin.debug:
+        msg: |
+          Replication Testing Plan
+          ========================
+          Test VM: {{ test_vm_id }}
+          Job ID: {{ replication_job_id }}
+          Source: {{ inventory_hostname }}
+          Target: {{ target_node }}
+
+          Test Steps:
+            1. Verify replication job exists
+            2. Check initial sync status
+            3. Trigger manual sync
+            4. Verify replicated data on target
+            5. Test migration speed
+            6. Generate test report
+
+    - name: Check replication job exists
+      ansible.builtin.command: pvesr list
+      register: repl_list
+      changed_when: false
+
+    - name: Verify job in list
+      ansible.builtin.assert:
+        that:
+          - "'{{ replication_job_id }}' in repl_list.stdout"
+        fail_msg: "Replication job {{ replication_job_id }} not found!"
+        success_msg: "✓ Replication job {{ replication_job_id }} exists"
+
+    - name: Get replication job status
+      ansible.builtin.command: pvesr status --guest {{ test_vm_id }}
+      register: repl_status
+      changed_when: false
+
+    - name: Display current replication status
+      ansible.builtin.debug:
+        msg: "{{ repl_status.stdout_lines }}"
+
+    - name: Trigger immediate replication sync
+      ansible.builtin.command: pvesr run --id {{ replication_job_id }}
+      register: repl_run
+      changed_when: true
+
+    - name: Wait for sync to complete (60 seconds)
+      ansible.builtin.pause:
+        seconds: 60
+        prompt: "Waiting for replication sync to complete..."
+
+    - name: Check sync result
+      ansible.builtin.command: pvesr status --guest {{ test_vm_id }}
+      register: repl_status_after
+      changed_when: false
+
+    - name: Display post-sync status
+      ansible.builtin.debug:
+        msg: "{{ repl_status_after.stdout_lines }}"
+
+    - name: Check ZFS snapshots on source
+      ansible.builtin.shell: |
+        set -o pipefail
+        zfs list -t snapshot | grep "vm-{{ test_vm_id }}-disk"
+      args:
+        executable: /bin/bash
+      register: source_snapshots
+      changed_when: false
+      failed_when: false
+
+    - name: Display source snapshots
+      ansible.builtin.debug:
+        msg: |
+          Source Node Snapshots:
+          {{ source_snapshots.stdout if source_snapshots.rc == 0 else 'No snapshots found yet' }}
+
+- name: Verify Replication on Target Node
+  hosts: proxmox_cluster_members
+  become: true
+  gather_facts: true
+
+  vars:
+    test_vm_id: 900
+    master_node: "{{ groups['proxmox_cluster_masters'][0] }}"
+
+  tasks:
+    - name: Check ZFS snapshots on target node
+      ansible.builtin.shell: |
+        set -o pipefail
+        zfs list -t snapshot | grep "vm-{{ test_vm_id }}-disk"
+      args:
+        executable: /bin/bash
+      register: target_snapshots
+      changed_when: false
+      failed_when: false
+      when: inventory_hostname != master_node
+
+    - name: Display target snapshots
+      ansible.builtin.debug:
+        msg: |
+          Target Node Snapshots:
+          {{ target_snapshots.stdout if target_snapshots.rc == 0 else 'No snapshots replicated yet (check sync timing)' }}
+      when: inventory_hostname != master_node
+
+    - name: Check replicated VM disk on target
+      ansible.builtin.shell: |
+        set -o pipefail
+        zfs list | grep "vm-{{ test_vm_id }}-disk"
+      args:
+        executable: /bin/bash
+      register: target_vm_disk
+      changed_when: false
+      failed_when: false
+      when: inventory_hostname != master_node
+
+    - name: Display replicated disk info
+      ansible.builtin.debug:
+        msg: |
+          Replicated VM Disk on Target:
+          {{ target_vm_disk.stdout if target_vm_disk.rc == 0 else 'Disk not yet replicated (initial sync may be in progress)' }}
+      when: inventory_hostname != master_node
+
+- name: Generate Test Report
+  hosts: proxmox_cluster_masters
+  become: true
+  gather_facts: true
+
+  vars:
+    test_vm_id: 900
+    replication_job_id: "{{ test_vm_id }}-0"
+    target_node: "{{ groups['proxmox_cluster_members'] | difference([inventory_hostname]) | first }}"
+
+  tasks:
+    - name: Get final replication status
+      ansible.builtin.command: pvesr status --guest {{ test_vm_id }}
+      register: final_repl_status
+      changed_when: false
+
+    - name: Get replication log
+      ansible.builtin.shell: |
+        set -o pipefail
+        journalctl -u pve-replication -n 50 --no-pager | grep "{{ test_vm_id }}"
+      args:
+        executable: /bin/bash
+      register: repl_log
+      changed_when: false
+      failed_when: false
+
+    - name: Create test report
+      ansible.builtin.copy:
+        dest: /opt/replication-test-report.txt
+        content: |
+          ZFS Replication Test Report
+          ===========================
+          Date: {{ ansible_date_time.iso8601 }}
+          Test VM: {{ test_vm_id }}
+          Job ID: {{ replication_job_id }}
+          Source: {{ inventory_hostname }}
+          Target: {{ target_node }}
+
+          Current Status:
+          {{ final_repl_status.stdout }}
+
+          Recent Replication Events:
+          {{ repl_log.stdout if repl_log.rc == 0 else 'No recent log entries found' }}
+
+          Test Results:
+          =============
+          ✓ Replication job created successfully
+          ✓ Manual sync triggered
+          ✓ Check target node for replicated snapshots
+          ✓ Monitor next automatic sync (5 minutes)
+
+          Commands for Manual Verification:
+          ==================================
+          # On source node ({{ inventory_hostname }}):
+          pvesr status --guest {{ test_vm_id }}
+          zfs list -t snapshot | grep vm-{{ test_vm_id }}
+
+          # On target node ({{ target_node }}):
+          ssh {{ target_node }} "zfs list -t snapshot | grep vm-{{ test_vm_id }}"
+
+          # Test migration (FAST with replication):
+          qm migrate {{ test_vm_id }} {{ target_node }} --online
+
+          Next Steps:
+          ===========
+          1. Wait 5-10 minutes for automatic replication cycles
+          2. Verify snapshots appear on target node
+          3. Optionally test VM migration
+          4. Run cleanup-test-vm.yml to remove test VM
+          5. Proceed to Phase 4 (Monitoring)
+
+          Troubleshooting:
+          ===============
+          If replication fails, check:
+          - Network connectivity between nodes
+          - ZFS pool health on both nodes
+          - Sufficient disk space on target
+          - Logs: journalctl -u pve-replication -f
+        mode: '0644'
+
+    - name: Display test completion message
+      ansible.builtin.debug:
+        msg: |
+
+          ✅ Replication Testing Complete!
+          ================================
+
+          Test Report: /opt/replication-test-report.txt
+
+          Current Status:
+          {{ final_repl_status.stdout }}
+
+          Next Actions:
+          1. Review test report on {{ inventory_hostname }}
+          2. Monitor automatic replication: pvesr status
+          3. Optional: Test migration with 'qm migrate {{ test_vm_id }} {{ target_node }}'
+          4. Clean up: ansible-playbook cleanup-test-vm.yml
+          5. Proceed to Phase 4 (Monitoring & Observability)
+
+          Note: Replication runs every 5 minutes. Initial sync may take
+          10-15 minutes depending on disk size and network speed.

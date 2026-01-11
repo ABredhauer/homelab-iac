@@ -1,7 +1,8 @@
 # ansible/playbooks/configure-storage.yml
 # Phase 3: Storage Configuration
 # - Mount NFS shares from Synology NAS
-# - Configure ZFS replication between cluster nodes (5-minute interval)
+# - Create test VM on local ZFS storage
+# - Configure and test ZFS replication between cluster nodes
 # - Set up backup schedule (4-week retention)
 # - Add memory monitoring (no swap configuration)
 
@@ -50,7 +51,7 @@
             2. {{ nfs_shares.shared.export_path }} -> {{ nfs_shares.shared.storage_id }}
             3. {{ nfs_shares.vm_storage.export_path }} -> {{ nfs_shares.vm_storage.storage_id }}
 
-          ZFS Replication: 5-minute interval between nodes
+          ZFS Replication: 5-minute interval (test VM only)
           Backup Schedule: Weekly (Sunday 2AM), 4-week retention
 
     # ===== PHASE 1: INSTALL NFS CLIENT =====
@@ -267,15 +268,104 @@
         mode: '0644'
 
 
-# ===== PLAY 2: Configure ZFS Replication Between Cluster Nodes =====
-- name: Configure ZFS Replication (Master Node Only)
+# ===== PLAY 2: Create Test VM for Replication Testing =====
+- name: Create Test VM on Master Node
   hosts: proxmox_cluster_masters
   become: true
   gather_facts: true
   strategy: linear
 
   vars:
-    replication_interval: 5  # minutes
+    test_vm_id: 900
+    test_vm_name: "replication-test"
+    test_vm_storage: "local-zfs"
+    replication_target: "{{ groups['proxmox_cluster_members'] | difference([inventory_hostname]) | first }}"
+    replication_interval: "*/5"  # Every 5 minutes
+
+  tasks:
+    - name: Display test VM configuration plan
+      ansible.builtin.debug:
+        msg: |
+          Test VM Configuration for Replication
+          ======================================
+          VMID: {{ test_vm_id }}
+          Name: {{ test_vm_name }}
+          Storage: {{ test_vm_storage }} (ZFS)
+          Source Node: {{ inventory_hostname }}
+          Target Node: {{ replication_target }}
+          Replication Interval: Every 5 minutes
+
+          This VM will be used to test replication functionality
+          and will be destroyed after validation.
+
+    - name: Check if test VM already exists
+      ansible.builtin.shell: |
+        set -o pipefail
+        qm list | grep -q "^\s*{{ test_vm_id }}\s"
+      args:
+        executable: /bin/bash
+      register: vm_exists_check
+      changed_when: false
+      failed_when: false
+
+    - name: Remove existing test VM if present
+      ansible.builtin.command: qm destroy {{ test_vm_id }} --purge
+      when: vm_exists_check.rc == 0
+      register: vm_destroy
+      changed_when: vm_destroy.rc == 0
+
+    - name: Create lightweight test VM (Alpine Linux)
+      ansible.builtin.command: >
+        qm create {{ test_vm_id }}
+        --name {{ test_vm_name }}
+        --memory 512
+        --cores 1
+        --net0 virtio,bridge=vmbr1
+        --scsihw virtio-scsi-pci
+        --scsi0 {{ test_vm_storage }}:8
+        --ostype l26
+        --boot order=scsi0
+        --agent enabled=0
+        --onboot 0
+        --description "Test VM for ZFS replication validation - Phase 3"
+      register: vm_create
+      changed_when: vm_create.rc == 0
+
+    - name: Verify test VM was created
+      ansible.builtin.command: qm config {{ test_vm_id }}
+      register: vm_config
+      changed_when: false
+
+    - name: Display test VM configuration
+      ansible.builtin.debug:
+        msg: "{{ vm_config.stdout_lines }}"
+
+    - name: Create test VM marker file
+      ansible.builtin.copy:
+        dest: /opt/test-vm-created
+        content: |
+          Test VM Created
+          ===============
+          VMID: {{ test_vm_id }}
+          Name: {{ test_vm_name }}
+          Storage: {{ test_vm_storage }}
+          Created: {{ ansible_date_time.iso8601 }}
+        mode: '0644'
+
+
+# ===== PLAY 3: Configure ZFS Replication for Test VM =====
+- name: Configure ZFS Replication for Test VM
+  hosts: proxmox_cluster_masters
+  become: true
+  gather_facts: true
+  strategy: linear
+
+  vars:
+    test_vm_id: 900
+    replication_target: "{{ groups['proxmox_cluster_members'] | difference([inventory_hostname]) | first }}"
+    replication_job_id: "{{ test_vm_id }}-0"
+    replication_interval: "*/5"  # Every 5 minutes
+    rate_limit: 10  # 10 MB/s
 
   tasks:
     - name: Display replication configuration plan
@@ -283,75 +373,94 @@
         msg: |
           ZFS Replication Configuration
           ==============================
-          Master: {{ inventory_hostname }}
-          Members: {{ groups['proxmox_cluster_members'] | join(', ') }}
-          Interval: Every {{ replication_interval }} minutes
+          Job ID: {{ replication_job_id }}
+          Source: {{ inventory_hostname }}
+          Target: {{ replication_target }}
+          Schedule: Every 5 minutes
+          Rate Limit: {{ rate_limit }} MB/s
 
-          Replication Jobs:
-          {% for member in groups['proxmox_cluster_members'] %}
-            - {{ inventory_hostname }} -> {{ member }} (every {{ replication_interval }} min)
-            - {{ member }} -> {{ inventory_hostname }} (every {{ replication_interval }} min)
-          {% endfor %}
+          Using: pvesr create-local-job (NOT pvesh)
 
-    - name: Get list of cluster members
-      ansible.builtin.command: pvecm nodes
-      register: cluster_nodes
+    - name: Check if replication job already exists
+      ansible.builtin.shell: |
+        set -o pipefail
+        pvesr list | grep -q "{{ replication_job_id }}"
+      args:
+        executable: /bin/bash
+      register: repl_exists_check
+      changed_when: false
+      failed_when: false
+
+    - name: Remove existing replication job if present
+      ansible.builtin.command: pvesr delete {{ replication_job_id }}
+      when: repl_exists_check.rc == 0
+      register: repl_delete
+      changed_when: repl_delete.rc == 0
+
+    - name: Create replication job using pvesr (correct command)
+      ansible.builtin.command: >
+        pvesr create-local-job {{ replication_job_id }} {{ replication_target }}
+        --schedule "{{ replication_interval }}"
+        --rate {{ rate_limit }}
+        --comment "Test replication job for VM {{ test_vm_id }} - Phase 3 validation"
+      register: repl_create
+      changed_when: repl_create.rc == 0
+
+    - name: Verify replication job was created
+      ansible.builtin.command: pvesr list
+      register: repl_list
       changed_when: false
 
-    - name: Display cluster nodes
+    - name: Display replication job list
       ansible.builtin.debug:
-        msg: "{{ cluster_nodes.stdout_lines }}"
+        msg: "{{ repl_list.stdout_lines }}"
 
-    - name: Configure replication from master to members
-      ansible.builtin.shell: |
-        set -o pipefail
-        pvesh create /cluster/replication \
-          --id replication-{{ inventory_hostname }}-to-{{ item }} \
-          --type zfs \
-          --target {{ item }} \
-          --schedule "*\/{{ replication_interval }}" \
-          --rate 100 \
-          --comment "Automated replication from {{ inventory_hostname }} to {{ item }}"
-      args:
-        executable: /bin/bash
-      loop: "{{ groups['proxmox_cluster_members'] }}"
-      register: repl_master_to_member
-      changed_when: repl_master_to_member.rc == 0
-      failed_when: >
-        repl_master_to_member.rc != 0 and
-        'already exists' not in repl_master_to_member.stderr
+    - name: Get detailed replication job configuration
+      ansible.builtin.command: pvesr read {{ replication_job_id }}
+      register: repl_config
+      changed_when: false
 
-    - name: Configure replication from members to master
-      ansible.builtin.shell: |
-        set -o pipefail
-        pvesh create /cluster/replication \
-          --id replication-{{ item }}-to-{{ inventory_hostname }} \
-          --type zfs \
-          --source {{ item }} \
-          --target {{ inventory_hostname }} \
-          --schedule "*\/{{ replication_interval }}" \
-          --rate 100 \
-          --comment "Automated replication from {{ item }} to {{ inventory_hostname }}"
-      args:
-        executable: /bin/bash
-      loop: "{{ groups['proxmox_cluster_members'] }}"
-      register: repl_member_to_master
-      changed_when: repl_member_to_master.rc == 0
-      failed_when: >
-        repl_member_to_master.rc != 0 and
-        'already exists' not in repl_member_to_master.stderr
+    - name: Display replication job configuration
+      ansible.builtin.debug:
+        msg: "{{ repl_config.stdout_lines }}"
 
-    - name: Verify replication configuration
-      ansible.builtin.command: pvesh get /cluster/replication
-      register: replication_status
+    - name: Trigger immediate replication sync (don't wait 5 minutes)
+      ansible.builtin.command: pvesr run --id {{ replication_job_id }}
+      register: repl_run
+      changed_when: repl_run.rc == 0
+      failed_when: false  # First sync may take time
+
+    - name: Wait for initial replication to complete (30 seconds)
+      ansible.builtin.pause:
+        seconds: 30
+
+    - name: Check replication status
+      ansible.builtin.command: pvesr status --guest {{ test_vm_id }}
+      register: repl_status
       changed_when: false
 
     - name: Display replication status
       ansible.builtin.debug:
-        msg: "{{ replication_status.stdout }}"
+        msg: "{{ repl_status.stdout_lines }}"
+
+    - name: Create replication configuration marker
+      ansible.builtin.copy:
+        dest: /opt/replication-config-complete
+        content: |
+          Replication Configuration Complete
+          ===================================
+          Job ID: {{ replication_job_id }}
+          Source: {{ inventory_hostname }}
+          Target: {{ replication_target }}
+          Schedule: {{ replication_interval }}
+          Rate Limit: {{ rate_limit }} MB/s
+          Configured: {{ ansible_date_time.iso8601 }}
+
+          Status: {{ repl_status.stdout }}
+        mode: '0644'
 
 
-# ===== PLAY 3: Configure Backup Schedule =====
+# ===== PLAY 4: Configure Backup Schedule =====
 - name: Configure Backup Schedule (Master Node Only)
   hosts: proxmox_cluster_masters
   become: true
@@ -433,7 +542,7 @@
         mode: '0644'
 
 
-# ===== PLAY 4: Final Verification =====
+# ===== PLAY 5: Final Verification =====
 - name: Final Storage and Replication Verification
   hosts: all
   become: true
@@ -451,10 +560,25 @@
       changed_when: false
 
     - name: Verify NFS mounts
-      ansible.builtin.command: df -h | grep synology
+      ansible.builtin.shell: |
+        set -o pipefail
+        df -h | grep synology
+      args:
+        executable: /bin/bash
       register: final_nfs_check
       changed_when: false
       failed_when: false
+
+    - name: Check for replicated VM on target node
+      ansible.builtin.shell: |
+        set -o pipefail
+        zfs list | grep "rpool/data/vm-900-disk"
+      args:
+        executable: /bin/bash
+      register: replicated_vm_check
+      changed_when: false
+      failed_when: false
+      when: inventory_hostname in groups['proxmox_cluster_members']
 
     - name: Display final verification results
       ansible.builtin.debug:
@@ -466,11 +590,14 @@
           Proxmox Storage Status:
           {{ final_storage_check.stdout }}
 
-          ZFS Pool Status:
-          {{ final_zfs_check.stdout }}
+          ZFS Pool Status (Summary):
+          {{ final_zfs_check.stdout_lines[:10] | join('\n') }}
 
           NFS Mounts:
-          {{ final_nfs_check.stdout }}
+          {{ final_nfs_check.stdout if final_nfs_check.rc == 0 else 'No NFS mounts found' }}
+
+          Replicated VM Check:
+          {{ replicated_vm_check.stdout if replicated_vm_check.rc == 0 else 'No replicated VM data yet' }}
 
     - name: Create phase 3 completion marker
       ansible.builtin.copy:
@@ -483,7 +610,7 @@
 
           Configuration Summary:
             - NFS storage mounted (3 shares)
-            - ZFS replication configured (5-minute interval)
+            - ZFS replication configured (test VM 900)
             - Backup schedule configured (weekly, 4-week retention)
             - Memory monitoring enabled (no swap)
 
@@ -493,23 +620,29 @@
             - synology-shared: ISO, templates, snippets
             - synology-vm-storage: HA VMs (instant failover)
 
+          Test VM:
+            - VMID: 900 (replication-test)
+            - Replication: Active (5-minute interval)
+            - Ready for testing and validation
+
           Next Steps:
-            - Phase 4: Monitoring (Prometheus + Grafana)
-            - Phase 5: VM Templates and Workloads
+            1. Run validation playbook (test-replication.yml)
+            2. Clean up test VM (cleanup-test-vm.yml)
+            3. Proceed to Phase 4: Monitoring
         mode: '0644'
 
     - name: Display completion message
       ansible.builtin.debug:
         msg: |
 
-          Phase 3 Storage Configuration Complete!
-          ========================================
+          ✅ Phase 3 Storage Configuration Complete!
+          =========================================
 
           All nodes configured with:
-            - NFS storage (3 mounts from Synology)
-            - ZFS replication (5-minute interval)
-            - Backup schedule (Sunday 2AM, 4-week retention)
-            - Memory monitoring (5-minute checks)
+            ✓ NFS storage (3 mounts from Synology)
+            ✓ ZFS replication (test VM 900 created)
+            ✓ Backup schedule (Sunday 2AM, 4-week retention)
+            ✓ Memory monitoring (5-minute checks)
 
           Storage Summary:
             - Local ZFS: ~857GB per node (replicated for HA)
@@ -517,4 +650,13 @@
             - NFS Shared: /volume1/homelab-shared (ISO, templates)
             - NFS VM Storage: /volume1/homelab-data (instant failover VMs)
 
-          Ready for: Phase 4 (Monitoring & Observability)
+          Test VM Status:
+            - VM 900 created on {{ groups['proxmox_cluster_masters'][0] }}
+            - Replication job active (check: pvesr status)
+            - Initial sync in progress
+
+          Next Actions:
+            1. Run: ansible-playbook test-replication.yml
+            2. Validate replication works correctly
+            3. Run: ansible-playbook cleanup-test-vm.yml
+            4. Proceed to Phase 4 (Monitoring & Observability)

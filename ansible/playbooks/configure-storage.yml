@@ -517,7 +517,7 @@
       retention: 4
       mode: "snapshot"
       compression: "zstd"
-      notification_mode: "auto"
+      notification_mode: "failure"
 
   tasks:
     - name: Display backup configuration plan

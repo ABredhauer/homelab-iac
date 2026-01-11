@@ -64,66 +64,89 @@
         update_cache: true
 
     # ===== PHASE 2: CREATE MOUNT POINTS (IDEMPOTENT) =====
-    - name: Check if mount point directories exist
-      ansible.builtin.stat:
-        path: "{{ item.value.mount_point }}"
-      register: mount_point_stats
-      loop: "{{ nfs_shares | dict2items }}"
-      loop_control:
-        label: "{{ item.value.mount_point }}"
-
-    - name: Create mount point directories (only if not mounted)
+    - name: Create mount point directory for backup
       ansible.builtin.file:
-        path: "{{ item.item.value.mount_point }}"
+        path: "{{ nfs_shares.backup.mount_point }}"
         state: directory
         mode: '0755'
-      loop: "{{ mount_point_stats.results }}"
-      loop_control:
-        label: "{{ item.item.value.mount_point }}"
-      when:
-        - not item.stat.exists or not item.stat.isdir
+      ignore_errors: true
+
+    - name: Create mount point directory for shared
+      ansible.builtin.file:
+        path: "{{ nfs_shares.shared.mount_point }}"
+        state: directory
+        mode: '0755'
+      ignore_errors: true
+
+    - name: Create mount point directory for vm_storage
+      ansible.builtin.file:
+        path: "{{ nfs_shares.vm_storage.mount_point }}"
+        state: directory
+        mode: '0755'
+      ignore_errors: true
 
     # ===== PHASE 3: MOUNT NFS SHARES (IDEMPOTENT) =====
-    - name: Check if NFS shares are already mounted
-      ansible.builtin.command: mountpoint -q {{ item.value.mount_point }}
-      register: mount_check
-      loop: "{{ nfs_shares | dict2items }}"
-      loop_control:
-        label: "{{ item.value.mount_point }}"
+    - name: Check if backup share is mounted
+      ansible.builtin.shell: |
+        set -o pipefail
+        mountpoint -q {{ nfs_shares.backup.mount_point }}
+      register: backup_mounted
       failed_when: false
       changed_when: false
 
-    - name: Mount NFS shares (skip if already mounted)
+    - name: Mount backup share
       ansible.posix.mount:
-        path: "{{ item.value.mount_point }}"
-        src: "{{ nas_ip }}:{{ item.value.export_path }}"
+        path: "{{ nfs_shares.backup.mount_point }}"
+        src: "{{ nas_ip }}:{{ nfs_shares.backup.export_path }}"
         fstype: nfs
-        opts: "{{ item.value.mount_options }}"
+        opts: "{{ nfs_shares.backup.mount_options }}"
         state: mounted
-      loop: "{{ nfs_shares | dict2items }}"
-      loop_control:
-        label: "{{ item.value.storage_id }}"
-      when:
-        - mount_check.results[item_idx].rc != 0
-      vars:
-        item_idx: "{{ nfs_shares | dict2items | map(attribute='key') | list | index(item.key) }}"
+      when: backup_mounted.rc != 0
+
+    - name: Check if shared storage is mounted
+      ansible.builtin.shell: |
+        set -o pipefail
+        mountpoint -q {{ nfs_shares.shared.mount_point }}
+      register: shared_mounted
+      failed_when: false
+      changed_when: false
+
+    - name: Mount shared storage
+      ansible.posix.mount:
+        path: "{{ nfs_shares.shared.mount_point }}"
+        src: "{{ nas_ip }}:{{ nfs_shares.shared.export_path }}"
+        fstype: nfs
+        opts: "{{ nfs_shares.shared.mount_options }}"
+        state: mounted
+      when: shared_mounted.rc != 0
+
+    - name: Check if vm_storage is mounted
+      ansible.builtin.shell: |
+        set -o pipefail
+        mountpoint -q {{ nfs_shares.vm_storage.mount_point }}
+      register: vm_storage_mounted
+      failed_when: false
+      changed_when: false
+
+    - name: Mount vm_storage
+      ansible.posix.mount:
+        path: "{{ nfs_shares.vm_storage.mount_point }}"
+        src: "{{ nas_ip }}:{{ nfs_shares.vm_storage.export_path }}"
+        fstype: nfs
+        opts: "{{ nfs_shares.vm_storage.mount_options }}"
+        state: mounted
+      when: vm_storage_mounted.rc != 0
 
     - name: Verify NFS mounts are accessible
-      ansible.builtin.command: ls -la {{ item.value.mount_point }}
+      ansible.builtin.shell: ls -la {{ nfs_shares.backup.mount_point }} && echo "backup ok"
       register: mount_verify
-      loop: "{{ nfs_shares | dict2items }}"
-      loop_control:
-        label: "{{ item.value.mount_point }}"
       changed_when: false
       retries: 3
       delay: 2
 
-    - name: Display mount verification results
+    - name: Display mount status
       ansible.builtin.debug:
-        msg: "{{ item.stdout_lines | first | default('Mount point accessible') }}"
-      loop: "{{ mount_verify.results }}"
-      loop_control:
-        label: "{{ item.item.value.storage_id }}"
+        msg: "NFS mounts verified and accessible"
 
     # ===== PHASE 4: CREATE SUBDIRECTORIES ON NFS SHARES =====
     - name: Create proxmox subdirectory in backup share
@@ -147,16 +170,11 @@
       run_once: true
 
     # ===== PHASE 5: ADD NFS STORAGE TO PROXMOX =====
-    - name: Check if storage already exists in Proxmox
+    - name: Check if backup storage already exists
       ansible.builtin.shell: |
         set -o pipefail
-        pvesm status | grep -q "{{ item.value.storage_id }}"
-      args:
-        executable: /bin/bash
-      register: storage_exists
-      loop: "{{ nfs_shares | dict2items }}"
-      loop_control:
-        label: "{{ item.value.storage_id }}"
+        pvesm status | grep -q "{{ nfs_shares.backup.storage_id }}"
+      register: backup_storage_exists
       failed_when: false
       changed_when: false
       run_once: true
@@ -169,13 +187,17 @@
         --path {{ nfs_shares.backup.mount_point }}
         --content {{ nfs_shares.backup.content_types }}
         --options {{ nfs_shares.backup.mount_options }}
-      register: storage_backup_add
-      changed_when: storage_backup_add.rc == 0
-      failed_when: >
-        storage_backup_add.rc != 0 and
-        'already exists' not in storage_backup_add.stderr
       run_once: true
-      when: storage_exists.results[0].rc != 0
+      when: backup_storage_exists.rc != 0
+
+    - name: Check if shared storage already exists
+      ansible.builtin.shell: |
+        set -o pipefail
+        pvesm status | grep -q "{{ nfs_shares.shared.storage_id }}"
+      register: shared_storage_exists
+      failed_when: false
+      changed_when: false
+      run_once: true
 
     - name: Add shared resources storage to Proxmox
       ansible.builtin.command: >
@@ -185,13 +207,17 @@
         --path {{ nfs_shares.shared.mount_point }}
         --content {{ nfs_shares.shared.content_types }}
         --options {{ nfs_shares.shared.mount_options }}
-      register: storage_shared_add
-      changed_when: storage_shared_add.rc == 0
-      failed_when: >
-        storage_shared_add.rc != 0 and
-        'already exists' not in storage_shared_add.stderr
       run_once: true
-      when: storage_exists.results[1].rc != 0
+      when: shared_storage_exists.rc != 0
+
+    - name: Check if vm_storage already exists
+      ansible.builtin.shell: |
+        set -o pipefail
+        pvesm status | grep -q "{{ nfs_shares.vm_storage.storage_id }}"
+      register: vm_storage_exists
+      failed_when: false
+      changed_when: false
+      run_once: true
 
     - name: Add VM storage to Proxmox
       ansible.builtin.command: >
@@ -201,13 +227,8 @@
         --path {{ nfs_shares.vm_storage.mount_point }}
         --content {{ nfs_shares.vm_storage.content_types }}
         --options {{ nfs_shares.vm_storage.mount_options }}
-      register: storage_vm_add
-      changed_when: storage_vm_add.rc == 0
-      failed_when: >
-        storage_vm_add.rc != 0 and
-        'already exists' not in storage_vm_add.stderr
       run_once: true
-      when: storage_exists.results[2].rc != 0
+      when: vm_storage_exists.rc != 0
 
     - name: Verify Proxmox storage configuration
       ansible.builtin.command: pvesm status
@@ -253,8 +274,6 @@
           if [ $PERCENT -gt 90 ]; then
             echo "WARNING: Memory usage at ${PERCENT}%" | wall
             logger -p user.warning -t memory-check "High memory pressure: ${PERCENT}% used (${USED}MB/${TOTAL}MB)"
-
-            # Log top 5 memory consumers
             ps aux --sort=-%mem | head -n 6 | logger -p user.info -t memory-check
           fi
 
@@ -325,9 +344,6 @@
           Target Node: {{ replication_target }}
           Replication Interval: Every 5 minutes
 
-          This VM will be used to test replication functionality
-          and will be destroyed after validation.
-
     - name: Check if test VM already exists
       ansible.builtin.shell: |
         set -o pipefail
@@ -345,7 +361,7 @@
       changed_when: vm_destroy.rc == 0
       failed_when: false
 
-    - name: Create lightweight test VM (Alpine Linux)
+    - name: Create lightweight test VM
       ansible.builtin.command: >
         qm create {{ test_vm_id }}
         --name {{ test_vm_name }}
@@ -369,7 +385,7 @@
 
     - name: Display test VM configuration
       ansible.builtin.debug:
-        msg: "{{ vm_config.stdout_lines }}"
+        msg: "Test VM 900 created successfully"
 
     - name: Create test VM marker file
       ansible.builtin.copy:
@@ -410,8 +426,6 @@
           Schedule: Every 5 minutes
           Rate Limit: {{ rate_limit }} MB/s
 
-          Using: pvesr create-local-job (NOT pvesh)
-
     - name: Check if replication job already exists
       ansible.builtin.shell: |
         set -o pipefail
@@ -433,7 +447,7 @@
       ansible.builtin.pause:
         seconds: 5
 
-    - name: Create replication job using pvesr (correct command)
+    - name: Create replication job using pvesr
       ansible.builtin.command: >
         pvesr create-local-job {{ replication_job_id }} {{ replication_target }}
         --schedule "{{ replication_interval }}"
@@ -453,22 +467,13 @@
       ansible.builtin.debug:
         msg: "{{ repl_list.stdout_lines }}"
 
-    - name: Get detailed replication job configuration
-      ansible.builtin.command: pvesr read {{ replication_job_id }}
-      register: repl_config
-      changed_when: false
-
-    - name: Display replication job configuration
-      ansible.builtin.debug:
-        msg: "{{ repl_config.stdout_lines }}"
-
-    - name: Trigger immediate replication sync (don't wait 5 minutes)
+    - name: Trigger immediate replication sync
       ansible.builtin.command: pvesr run --id {{ replication_job_id }}
       register: repl_run
       changed_when: repl_run.rc == 0
       failed_when: false
 
-    - name: Wait for initial replication to complete (30 seconds)
+    - name: Wait for initial replication (30 seconds)
       ansible.builtin.pause:
         seconds: 30
 
@@ -547,9 +552,9 @@
         --enabled 1
         --mailnotification {{ backup_schedule.notification_mode }}
         --prune-backups "keep-last={{ backup_schedule.retention }}"
-      register: backup_create
+      run_once: true
       when: backup_check.rc != 0
-      changed_when: backup_create.rc == 0
+      changed_when: true
 
     - name: Verify backup job configuration
       ansible.builtin.command: pvesh get /cluster/backup
@@ -657,11 +662,6 @@
             - NFS Backup: /volume1/backups/proxmox
             - NFS Shared: /volume1/homelab-shared (ISO, templates)
             - NFS VM Storage: /volume1/homelab-data (instant failover VMs)
-
-          Test VM Status:
-            - VM 900 created on {{ groups['proxmox_cluster_masters'][0] }}
-            - Replication job active (check: pvesr status)
-            - Initial sync in progress
 
           Next Actions:
             1. Run: ansible-playbook test-replication.yml

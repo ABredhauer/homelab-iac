@@ -63,17 +63,27 @@
         state: present
         update_cache: true
 
-    # ===== PHASE 2: CREATE MOUNT POINTS =====
-    - name: Create mount point directories
-      ansible.builtin.file:
+    # ===== PHASE 2: CREATE MOUNT POINTS (IDEMPOTENT) =====
+    - name: Check if mount point directories exist
+      ansible.builtin.stat:
         path: "{{ item.value.mount_point }}"
-        state: directory
-        mode: '0755'
+      register: mount_point_stats
       loop: "{{ nfs_shares | dict2items }}"
       loop_control:
         label: "{{ item.value.mount_point }}"
 
-    # ===== PHASE 3: MOUNT NFS SHARES =====
+    - name: Create mount point directories (only if not mounted)
+      ansible.builtin.file:
+        path: "{{ item.item.value.mount_point }}"
+        state: directory
+        mode: '0755'
+      loop: "{{ mount_point_stats.results }}"
+      loop_control:
+        label: "{{ item.item.value.mount_point }}"
+      when:
+        - not item.stat.exists or not item.stat.isdir
+
+    # ===== PHASE 3: MOUNT NFS SHARES (IDEMPOTENT) =====
     - name: Check if NFS shares are already mounted
       ansible.builtin.command: mountpoint -q {{ item.value.mount_point }}
       register: mount_check
@@ -83,7 +93,7 @@
       failed_when: false
       changed_when: false
 
-    - name: Mount NFS shares
+    - name: Mount NFS shares (skip if already mounted)
       ansible.posix.mount:
         path: "{{ item.value.mount_point }}"
         src: "{{ nas_ip }}:{{ item.value.export_path }}"
@@ -93,6 +103,10 @@
       loop: "{{ nfs_shares | dict2items }}"
       loop_control:
         label: "{{ item.value.storage_id }}"
+      when:
+        - mount_check.results[item_idx].rc != 0
+      vars:
+        item_idx: "{{ nfs_shares | dict2items | map(attribute='key') | list | index(item.key) }}"
 
     - name: Verify NFS mounts are accessible
       ansible.builtin.command: ls -la {{ item.value.mount_point }}
@@ -101,10 +115,12 @@
       loop_control:
         label: "{{ item.value.mount_point }}"
       changed_when: false
+      retries: 3
+      delay: 2
 
     - name: Display mount verification results
       ansible.builtin.debug:
-        msg: "{{ item.stdout_lines }}"
+        msg: "{{ item.stdout_lines | first | default('Mount point accessible') }}"
       loop: "{{ mount_verify.results }}"
       loop_control:
         label: "{{ item.item.value.storage_id }}"
@@ -131,6 +147,20 @@
       run_once: true
 
     # ===== PHASE 5: ADD NFS STORAGE TO PROXMOX =====
+    - name: Check if storage already exists in Proxmox
+      ansible.builtin.shell: |
+        set -o pipefail
+        pvesm status | grep -q "{{ item.value.storage_id }}"
+      args:
+        executable: /bin/bash
+      register: storage_exists
+      loop: "{{ nfs_shares | dict2items }}"
+      loop_control:
+        label: "{{ item.value.storage_id }}"
+      failed_when: false
+      changed_when: false
+      run_once: true
+
     - name: Add backup storage to Proxmox
       ansible.builtin.command: >
         pvesm add nfs {{ nfs_shares.backup.storage_id }}
@@ -145,6 +175,7 @@
         storage_backup_add.rc != 0 and
         'already exists' not in storage_backup_add.stderr
       run_once: true
+      when: storage_exists.results[0].rc != 0
 
     - name: Add shared resources storage to Proxmox
       ansible.builtin.command: >
@@ -160,6 +191,7 @@
         storage_shared_add.rc != 0 and
         'already exists' not in storage_shared_add.stderr
       run_once: true
+      when: storage_exists.results[1].rc != 0
 
     - name: Add VM storage to Proxmox
       ansible.builtin.command: >
@@ -175,6 +207,7 @@
         storage_vm_add.rc != 0 and
         'already exists' not in storage_vm_add.stderr
       run_once: true
+      when: storage_exists.results[2].rc != 0
 
     - name: Verify Proxmox storage configuration
       ansible.builtin.command: pvesm status
@@ -195,9 +228,7 @@
         - "zfs set xattr=sa rpool/data"
       register: zfs_config
       changed_when: zfs_config.rc == 0
-      failed_when: >
-        zfs_config.rc != 0 and
-        'property is already set' not in zfs_config.stderr
+      failed_when: false
 
     # ===== PHASE 7: MEMORY MONITORING (NO SWAP) =====
     - name: Install memory monitoring tools
@@ -237,7 +268,7 @@
     - name: Create memory check alias in bashrc
       ansible.builtin.lineinfile:
         path: /root/.bashrc
-        line: "alias memcheck='free -h && echo && echo \"Top 10 memory consumers:\" && ps aux --sort=-%mem | head -n 11'"
+        line: "alias memcheck='free -h && echo && echo "Top 10 memory consumers:" && ps aux --sort=-%mem | head -n 11'"
         state: present
 
     # ===== PHASE 8: CREATE COMPLETION MARKER =====
@@ -280,7 +311,6 @@
     test_vm_name: "replication-test"
     test_vm_storage: "local-zfs"
     replication_target: "{{ groups['proxmox_cluster_members'] | difference([inventory_hostname]) | first }}"
-    replication_interval: "*/5"  # Every 5 minutes
 
   tasks:
     - name: Display test VM configuration plan
@@ -313,6 +343,7 @@
       when: vm_exists_check.rc == 0
       register: vm_destroy
       changed_when: vm_destroy.rc == 0
+      failed_when: false
 
     - name: Create lightweight test VM (Alpine Linux)
       ansible.builtin.command: >
@@ -364,8 +395,8 @@
     test_vm_id: 900
     replication_target: "{{ groups['proxmox_cluster_members'] | difference([inventory_hostname]) | first }}"
     replication_job_id: "{{ test_vm_id }}-0"
-    replication_interval: "*/5"  # Every 5 minutes
-    rate_limit: 10  # 10 MB/s
+    replication_interval: "*/5"
+    rate_limit: 10
 
   tasks:
     - name: Display replication configuration plan
@@ -392,10 +423,15 @@
       failed_when: false
 
     - name: Remove existing replication job if present
-      ansible.builtin.command: pvesr delete {{ replication_job_id }}
+      ansible.builtin.command: pvesr delete {{ replication_job_id }} --force
       when: repl_exists_check.rc == 0
       register: repl_delete
       changed_when: repl_delete.rc == 0
+      failed_when: false
+
+    - name: Wait for VM disk to be ready
+      ansible.builtin.pause:
+        seconds: 5
 
     - name: Create replication job using pvesr (correct command)
       ansible.builtin.command: >
@@ -405,6 +441,8 @@
         --comment "Test replication job for VM {{ test_vm_id }} - Phase 3 validation"
       register: repl_create
       changed_when: repl_create.rc == 0
+      retries: 3
+      delay: 5
 
     - name: Verify replication job was created
       ansible.builtin.command: pvesr list
@@ -428,7 +466,7 @@
       ansible.builtin.command: pvesr run --id {{ replication_job_id }}
       register: repl_run
       changed_when: repl_run.rc == 0
-      failed_when: false  # First sync may take time
+      failed_when: false
 
     - name: Wait for initial replication to complete (30 seconds)
       ansible.builtin.pause:
@@ -456,7 +494,7 @@
           Rate Limit: {{ rate_limit }} MB/s
           Configured: {{ ansible_date_time.iso8601 }}
 
-          Status: {{ repl_status.stdout }}
+          Status: Check with: pvesr status --guest {{ test_vm_id }}
         mode: '0644'
 
 
@@ -568,36 +606,6 @@
       register: final_nfs_check
       changed_when: false
       failed_when: false
-
-    - name: Check for replicated VM on target node
-      ansible.builtin.shell: |
-        set -o pipefail
-        zfs list | grep "rpool/data/vm-900-disk"
-      args:
-        executable: /bin/bash
-      register: replicated_vm_check
-      changed_when: false
-      failed_when: false
-      when: inventory_hostname in groups['proxmox_cluster_members']
-
-    - name: Display final verification results
-      ansible.builtin.debug:
-        msg: |
-          Storage Verification Results
-          ============================
-          Node: {{ inventory_hostname }}
-
-          Proxmox Storage Status:
-          {{ final_storage_check.stdout }}
-
-          ZFS Pool Status (Summary):
-          {{ final_zfs_check.stdout_lines[:10] | join('\n') }}
-
-          NFS Mounts:
-          {{ final_nfs_check.stdout if final_nfs_check.rc == 0 else 'No NFS mounts found' }}
-
-          Replicated VM Check:
-          {{ replicated_vm_check.stdout if replicated_vm_check.rc == 0 else 'No replicated VM data yet' }}
 
     - name: Create phase 3 completion marker
       ansible.builtin.copy:

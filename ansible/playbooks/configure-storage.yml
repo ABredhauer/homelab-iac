@@ -268,7 +268,7 @@
     - name: Create memory check alias in bashrc
       ansible.builtin.lineinfile:
         path: /root/.bashrc
-        line: "alias memcheck='free -h && echo && echo "Top 10 memory consumers:" && ps aux --sort=-%mem | head -n 11'"
+        line: "alias memcheck='free -h && echo && echo \"Top 10 memory consumers:\" && ps aux --sort=-%mem | head -n 11'"
         state: present
 
     # ===== PHASE 8: CREATE COMPLETION MARKER =====

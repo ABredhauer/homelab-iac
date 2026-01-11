@@ -1,6 +1,6 @@
 # Homelab Infrastructure as Code
 
-**Status:** Phase 2 Complete (Cluster Formation + QDevice) | Phase 3 Next (Storage Configuration)
+**Status:** Phase 2 Complete (Cluster Formation + QDevice) | Phase 3 In Progress (Storage Configuration)
 
 Automated Dell OptiPlex 7000 Micro Proxmox cluster with:
 - [DONE] Unattended Proxmox Installation via answer files
@@ -8,7 +8,7 @@ Automated Dell OptiPlex 7000 Micro Proxmox cluster with:
 - [DONE] Ansible Post-Install Bootstrap (SSH hardening, package setup)
 - [DONE] Dual-Link Corosync Cluster formation with external quorum (QDevice)
 - [DONE] **QDevice Automation** (Raspberry Pi bootstrap + corosync-qnetd)
-- [IN PROGRESS] Shared Storage (NFS from Synology)
+- [IN PROGRESS] Shared Storage (NFS from Synology NAS)
 - [TODO] Configuration Drift Detection (Cron-based validation)
 - [TODO] VM/Container Templates with automated deployment
 
@@ -28,7 +28,6 @@ Automated Dell OptiPlex 7000 Micro Proxmox cluster with:
 |  |  pve-node1 (192.168.10.230)  <- USB 2.5GbE   |   |
 |  |  pve-node2 (192.168.10.232)  <- USB 2.5GbE   |   |
 |  |  QDevice   (192.168.10.164)  <- Raspberry Pi |   |
-|  |  Semaphore (192.168.10.50)   <- Orchestration|   |
 |  +----------------------------------------------+   |
 |                 |                                   |
 |          Corosync Link 0 (Primary)                  |
@@ -39,7 +38,8 @@ Automated Dell OptiPlex 7000 Micro Proxmox cluster with:
 |  +----------------------------------------------+   |
 |  |  pve-node1.internal (192.168.1.230)  <- 1G   |   |
 |  |  pve-node2.internal (192.168.1.232)  <- 1G   |   |
-|  |  Synology NAS     (192.168.1.164)   <- NFS   |   |
+|  |  Synology NAS     (192.168.1.25)    <- NFS   |   |
+|  |  Semaphore        (192.168.1.196)   <- Orch  |   |
 |  |  Kubernetes/VMs    (192.168.1.x)    <- Work  |   |
 |  +----------------------------------------------+   |
 |                 |                                   |
@@ -80,6 +80,18 @@ Automated Dell OptiPlex 7000 Micro Proxmox cluster with:
 |  +- Service: corosync-qnetd (port 5403/tcp)    |
 |  +- Managed by: Ansible + Semaphore            |
 |  +- Security: Temporary root SSH (password -> key-only) |
+|                                                |
+|  Shared Storage: Synology NAS (192.168.1.25)   |
+|  +- NFS Exports:                               |
+|     +- /volume1/backups -> Proxmox backups     |
+|     +- /volume1/homelab-shared -> ISOs/templates|
+|     +- /volume1/homelab-data -> VM storage     |
+|                                                |
+|  Control Plane: Semaphore (192.168.1.196)      |
+|  +- Deployment: Docker container on NAS        |
+|  +- Web UI: https://192.168.1.196              |
+|  +- Function: Ansible playbook orchestration   |
+|  +- Authentication: Key-based to all nodes     |
 |                                                |
 +------------------------------------------------+
 ```
@@ -165,15 +177,31 @@ homelab-iac/
 **On Target Hardware:**
 - Dell OptiPlex 7000 Micro (or similar with dual NICs)
 - Two separate physical networks available
-- iVentoy USB stick prepared (see installer/README-INSTALLER.md)
+- iVentoy USB stick or PXE server prepared (see installer/README-INSTALLER.md)
 
 **Infrastructure Requirements:**
 - DHCP server on management network (192.168.10.x)
-- NAS with NFS export ready (Synology tested)
+- NAS with NFS export ready (Synology at 192.168.1.25)
 - **QDevice node: Raspberry Pi 4 (8GB) with Raspberry Pi OS Lite**
-- Semaphore automation server (runs on management VLAN)
+- Semaphore automation server (Docker container at 192.168.1.196)
 
 ### Phase 1-2: Node Provisioning + Cluster Formation
+
+#### Step 0: Prepare iVentoy Boot Environment
+
+**Using iVentoy for PXE Network Boot:**
+
+1. Download iVentoy from https://www.iventoy.com/
+2. Prepare custom Proxmox ISO (see below)
+3. Copy custom ISO to iVentoy data directory
+4. Start iVentoy server
+5. Configure network DHCP to point to iVentoy
+
+**Boot Process:**
+- Nodes PXE boot from network
+- iVentoy menu displays available ISOs
+- Select custom Proxmox ISO
+- Unattended installation proceeds automatically
 
 #### Step 1: Prepare Custom ISO
 
@@ -185,9 +213,12 @@ proxmox-auto-install-assistant prepare-iso \
 # Output: proxmox-ve_9.0-1-custom.iso
 ```
 
+Copy the custom ISO to your iVentoy server or USB stick.
+
 #### Step 2: Boot Proxmox Nodes
 
-- Insert iVentoy USB stick
+- Boot nodes via PXE (iVentoy network boot)
+- OR: Boot from iVentoy USB stick
 - Select custom ISO from iVentoy menu
 - Proxmox installer runs completely unattended (15â€“20 min)
 - System reboots and runs first-boot script automatically
@@ -208,7 +239,7 @@ This script:
 
 #### Step 4: Run QDevice Bootstrap via Semaphore
 
-In Semaphore UI:
+In Semaphore UI (https://192.168.1.196):
 - **Template**: `Bootstrap QDevice`
 - **Playbook**: `ansible/playbooks/bootstrap-qdevice.yml`
 - **Inventory**: `production-cluster.yml`
@@ -246,11 +277,19 @@ The bootstrap playbook runs in **two phases**:
 ```bash
 # After both Proxmox nodes + QDevice are provisioned and bootstrapped
 ansible-playbook -i ansible/inventory/production-cluster.yml \
-  ansible/playbooks/cluster-formation.yml
+  ansible/playbooks/cluster-formation.yml -vv
 
 # Verify cluster health
 ssh root@pve-node1.homelab.bredhauer.net 'pvecm status'
 ```
+
+The cluster-formation playbook includes:
+- SSH key trust setup between Proxmox nodes
+- SSH key deployment to QDevice for `pvecm qdevice setup`
+- Cluster creation on master node
+- Node join automation
+- QDevice setup (validates even number of nodes)
+- Dual-link Corosync configuration
 
 #### Step 6: Cleanup Root SSH on QDevice
 
@@ -303,6 +342,8 @@ This playbook:
   - [X] Temporary root SSH for qdevice setup
   - [X] Idempotent handling of existing `coroqnetd` user
   - [X] Root SSH cleanup (`disable-qdevice-root.yml`)
+- [X] SSH key trust automation (node-to-node and node-to-qdevice)
+- [X] Even-node validation for QDevice setup
 
 **Deliverables:**
 - `cluster-formation.yml` - Full cluster formation playbook
@@ -320,11 +361,13 @@ This playbook:
 
 **Timeline:** Jan 10â€“17
 
-- [ ] NFS mount from Synology NAS (192.168.1.164)
+- [ ] NFS mount from Synology NAS (192.168.1.25)
 - [ ] Storage pool creation on both nodes
 - [ ] VM disk provisioning (local + shared)
 - [ ] Storage failover testing
 - [ ] Automated backups to NAS
+- [ ] ZFS replication between nodes (5-minute interval)
+- [ ] Memory monitoring (no swap configuration)
 
 **Deliverables (Next):**
 - `configure-storage.yml` - NFS mount and storage pool setup
@@ -334,7 +377,7 @@ This playbook:
 
 ```bash
 # Will be automated via Ansible
-pvesm add dir <storage_id> --path /mnt/nfs --shared 1
+pvesm add nfs <storage_id> --server 192.168.1.25 --export /volume1/backups
 ```
 
 ---
@@ -383,10 +426,12 @@ pvesm add dir <storage_id> --path /mnt/nfs --shared 1
 
 Component                    | Status   | Playbook
 ---------------------------- | -------- | --------------------------------
-Proxmox Installation         | DONE     | Answer file + first-boot script
+Proxmox Installation         | DONE     | Answer file + iVentoy PXE boot
 Node Bootstrap               | DONE     | `bootstrap-proxmox.yml`
 SSH Hardening                | DONE     | `bootstrap-proxmox.yml`
 Cluster Creation             | DONE     | `cluster-formation.yml`
+SSH Key Trust (Nodes)        | DONE     | `cluster-formation.yml`
+SSH Key Trust (QDevice)      | DONE     | `cluster-formation.yml`
 Quorum Voting (QDevice)      | DONE     | `bootstrap-qdevice.yml` + `configure-qdevice.yml`
 QDevice Security Cleanup     | DONE     | `disable-qdevice-root.yml`
 NFS Storage Mount            | PROGRESS | Next playbook
@@ -401,6 +446,7 @@ VM Provisioning              | TODO     | Phase 5
 - [X] All configuration in Git (IaC principle)
 - [X] Ansible idempotency (safe to re-run playbooks)
 - [X] QDevice automation (Raspberry Pi fully managed)
+- [X] iVentoy PXE boot workflow
 
 ---
 
@@ -411,7 +457,7 @@ VM Provisioning              | TODO     | Phase 5
 **First Time Setup (New Cluster):**
 
 ```bash
-# Phase 1: Bootstrap Proxmox nodes
+# Phase 1: Bootstrap Proxmox nodes (after PXE boot via iVentoy)
 ansible-playbook -i ansible/inventory/provisioning-nodes.yml \
   ansible/playbooks/bootstrap-proxmox.yml
 
@@ -425,6 +471,11 @@ ansible-playbook -i ansible/inventory/production-cluster.yml \
 # Phase 2: Form Proxmox cluster
 ansible-playbook -i ansible/inventory/production-cluster.yml \
   ansible/playbooks/cluster-formation.yml
+
+# Phase 2: Cleanup QDevice root access
+ansible-playbook -i ansible/inventory/production-cluster.yml \
+  ansible/playbooks/disable-qdevice-root.yml \
+  -l qdevice
 ```
 
 **Idempotent Re-runs (Safe):**
@@ -554,9 +605,19 @@ nameserver = "8.8.8.8"
 
 ## Troubleshooting
 
+### iVentoy PXE Boot Issues
+
+**Problem:** Node doesn't boot from network
+
+**Solution:**
+1. Verify iVentoy server is running
+2. Check DHCP server is configured to point to iVentoy
+3. Ensure custom ISO is in iVentoy data directory
+4. Verify node BIOS has network boot enabled and prioritized
+
 ### Node Won't Boot from ISO
 
-**Problem:** Proxmox installer doesn't start
+**Problem:** Proxmox installer doesn't start from iVentoy
 
 **Solution:** Check `installer/README-INSTALLER.md` for iVentoy setup.
 
@@ -564,15 +625,17 @@ nameserver = "8.8.8.8"
 
 **Problem:** `pvecm create` fails with "already exists".
 
-**Solution:** Playbook is idempotent â€” this is expected on re-runs. Check `pvecm status`.
+**Solution:** Playbook is idempotent â€“ this is expected on re-runs. Check `pvecm status`.
 
 **Problem:** Node won't join cluster.
 
-**Solution:** Verify fingerprint matches:
+**Solution:** Verify SSH key trust between nodes:
 
 ```bash
 # On master
-pvenode cert info --output-format json | jq '.[] | select(.filename=="pve-ssl.pem") | .fingerprint'
+ssh root@pve-node1.homelab.bredhauer.net
+ssh root@192.168.10.232 hostname
+# Should return: pve-node2 (no password prompt)
 ```
 
 ### SSH Access Denied
@@ -604,7 +667,16 @@ ssh ansible@192.168.10.164 'sudo systemctl status corosync-qnetd'
 
 # Check votes from master
 pvecm qdevice status
+
+# Verify Proxmox nodes can SSH to QDevice as root
+ssh root@pve-node1.homelab.bredhauer.net
+ssh root@192.168.10.164 hostname
+# Should return: qdevice hostname (no password prompt)
 ```
+
+**Problem:** QDevice setup fails with "odd number of nodes not supported"
+
+**Solution:** QDevice requires even number of nodes (2, 4, 6, etc.). Ensure both nodes have joined cluster before running QDevice setup.
 
 See `docs/TROUBLESHOOTING.md` for more scenarios.
 
@@ -663,6 +735,7 @@ See `docs/TROUBLESHOOTING.md` for more scenarios.
 **Weekly:**
 - [ ] Verify cluster quorum: `pvecm status`
 - [ ] Check storage free space: `df -h /mnt/nfs`
+- [ ] Verify QDevice voting: `pvecm qdevice status`
 
 **Monthly:**
 - [ ] Run configuration drift check: `scripts/verify-infrastructure.sh`
@@ -698,6 +771,7 @@ ssh root@pve-node1 'cd /etc/pve && tar -xzf ~/backup-2024-01.tar.gz'
 - Corosync Redundancy: https://pve.proxmox.com/wiki/Clustering
 - QDevice Setup: https://pve.proxmox.com/wiki/Cluster_Setup#corosync
 - Ansible Best Practices: https://docs.ansible.com/ansible/latest/user_guide/playbooks_best_practices.html
+- iVentoy Documentation: https://www.iventoy.com/en/index.html
 
 ### Internal Documentation
 
@@ -731,7 +805,11 @@ Andrew Bredhauer | Brisbane, Australia | https://github.com/ABredhauer
 - [X] Added two-phase `bootstrap-qdevice.yml` (root â†’ ansible user)
 - [X] Added `configure-qdevice.yml` for `corosync-qnetd` setup
 - [X] Added `disable-qdevice-root.yml` for post-setup hardening
+- [X] Added SSH key trust automation (node-to-node and node-to-qdevice)
+- [X] Added even-node validation for QDevice setup
 - [X] Updated documentation to cover QDevice lifecycle
+- [X] Added iVentoy PXE boot documentation
+- [X] Corrected Semaphore IP address (192.168.1.196)
 
 ### v2.0 (January 2026) - Phase 2 Complete
 

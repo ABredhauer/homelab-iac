@@ -335,7 +335,7 @@
   vars:
     test_vm_id: 900
     test_vm_name: "replication-test"
-    test_vm_storage: "rpool"
+    test_vm_storage: "local-zfs"
     replication_target: "{{ groups['proxmox_cluster_members'] | difference([inventory_hostname]) | first }}"
 
   tasks:

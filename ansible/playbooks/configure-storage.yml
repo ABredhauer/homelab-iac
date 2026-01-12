@@ -1,7 +1,7 @@
 # ansible/playbooks/configure-storage.yml
-# Phase 3: Storage Configuration (v5 - Improved VM Handling + ZFS Snapshot Fix)
+# Phase 3: Storage Configuration (v6 - Fixed ZFS pool name)
 # - Mount NFS shares from NAS
-# - Create test VM on local ZFS storage (with robust destruction/recreation)
+# - Create test VM on local ZFS storage (RPOOL - not local-zfs!)
 # - Configure and test ZFS replication between cluster nodes
 # - Set up backup schedule (4-week retention)
 # - Add memory monitoring (no swap configuration)
@@ -335,7 +335,7 @@
   vars:
     test_vm_id: 900
     test_vm_name: "replication-test"
-    test_vm_storage: "local-zfs"
+    test_vm_storage: "rpool"
     replication_target: "{{ groups['proxmox_cluster_members'] | difference([inventory_hostname]) | first }}"
 
   tasks:
@@ -492,7 +492,7 @@
     - name: Create initial snapshot for replication base
       ansible.builtin.shell: |
         set -o pipefail
-        zfs snapshot local-zfs/vm-900-disk-0@repl-init
+        zfs snapshot rpool/vm-900-disk-0@repl-init
       register: snapshot_create
       changed_when: snapshot_create.rc == 0
       failed_when: false
@@ -509,7 +509,7 @@
 
     - name: Display snapshot status
       ansible.builtin.debug:
-        msg: "Initial snapshot created: vm-900-disk-0@repl-init"
+        msg: "Initial snapshot created: rpool/vm-900-disk-0@repl-init"
       when: snapshot_verify.rc == 0
 
     - name: Create replication job using pvesr
@@ -563,7 +563,7 @@
           Target: {{ replication_target }}
           Schedule: {{ replication_interval }}
           Rate Limit: {{ rate_limit }} MB/s
-          Initial Snapshot: vm-900-disk-0@repl-init
+          Initial Snapshot: rpool/vm-900-disk-0@repl-init
           Configured: {{ ansible_date_time.iso8601 }}
 
           Status: Check with: pvesr status --guest {{ test_vm_id }}
@@ -691,12 +691,12 @@
           Configuration Summary:
             - NFS storage mounted (3 shares)
             - ZFS replication configured (test VM 900)
-            - Initial snapshot created (vm-900-disk-0@repl-init)
+            - Initial snapshot created (rpool/vm-900-disk-0@repl-init)
             - Backup schedule configured (weekly, 4-week retention)
             - Memory monitoring enabled (no swap)
 
           Storage Available:
-            - local-zfs: ~857GB (local VM storage with replication)
+            - rpool: ~857GB (local VM storage with replication)
             - nas-backup: Backups only (/volume1/backups/proxmox)
             - nas-shared: ISO, templates, snippets
             - nas-vm-storage: HA VMs (instant failover)
@@ -722,12 +722,12 @@
           All nodes configured with:
             ✓ NFS storage (3 mounts from NAS)
             ✓ ZFS replication (test VM 900 created)
-            ✓ Initial snapshot (vm-900-disk-0@repl-init)
+            ✓ Initial snapshot (rpool/vm-900-disk-0@repl-init)
             ✓ Backup schedule (Sunday 2AM, 4-week retention)
             ✓ Memory monitoring (5-minute checks)
 
           Storage Summary:
-            - Local ZFS: ~857GB per node (replicated for HA)
+            - Local ZFS (rpool): ~857GB per node (replicated for HA)
             - NAS Backup: /volume1/backups/proxmox
             - NAS Shared: /volume1/homelab-shared (ISO, templates)
             - NAS VM Storage: /volume1/homelab-data (instant failover VMs)

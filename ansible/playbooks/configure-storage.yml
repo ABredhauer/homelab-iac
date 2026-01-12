@@ -489,29 +489,6 @@
       ansible.builtin.pause:
         seconds: 5
 
-    - name: Create initial snapshot for replication base
-      ansible.builtin.shell: |
-        set -o pipefail
-        zfs snapshot rpool/vm-900-disk-0@repl-init
-      register: snapshot_create
-      changed_when: snapshot_create.rc == 0
-      failed_when: false
-      retries: 3
-      delay: 2
-
-    - name: Verify initial snapshot exists
-      ansible.builtin.shell: |
-        set -o pipefail
-        zfs list -t snapshot | grep "vm-900-disk-0@repl-init"
-      register: snapshot_verify
-      changed_when: false
-      failed_when: false
-
-    - name: Display snapshot status
-      ansible.builtin.debug:
-        msg: "Initial snapshot created: rpool/vm-900-disk-0@repl-init"
-      when: snapshot_verify.rc == 0
-
     - name: Create replication job using pvesr
       ansible.builtin.command: >
         pvesr create-local-job {{ replication_job_id }} {{ replication_target }}
@@ -520,6 +497,7 @@
         --comment "Test replication job for VM {{ test_vm_id }} - Phase 3 validation"
       register: repl_create
       changed_when: repl_create.rc == 0
+      failed_when: repl_create.rc != 0
       retries: 3
       delay: 5
 
@@ -536,6 +514,7 @@
       ansible.builtin.command: pvesr run --id {{ replication_job_id }}
       register: repl_run
       changed_when: repl_run.rc == 0
+      failed_when: false
       retries: 3
       delay: 5
 
@@ -563,12 +542,11 @@
           Target: {{ replication_target }}
           Schedule: {{ replication_interval }}
           Rate Limit: {{ rate_limit }} MB/s
-          Initial Snapshot: rpool/vm-900-disk-0@repl-init
           Configured: {{ ansible_date_time.iso8601 }}
 
           Status: Check with: pvesr status --guest {{ test_vm_id }}
+          Note: pvesr manages snapshots automatically
         mode: '0644'
-
 
 # ===== PLAY 4: Configure Backup Schedule =====
 - name: Configure Backup Schedule (Master Node Only)

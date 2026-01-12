@@ -1,6 +1,6 @@
 # ansible/playbooks/configure-storage.yml
 # Phase 3: Storage Configuration
-# - Mount NFS shares from Synology NAS
+# - Mount NFS shares from NAS
 # - Create test VM on local ZFS storage
 # - Configure and test ZFS replication between cluster nodes
 # - Set up backup schedule (4-week retention)
@@ -18,23 +18,23 @@
 
     nfs_shares:
       backup:
-        export_path: "/volume1/backups"
-        mount_point: "/mnt/pve/synology-backup"
-        storage_id: "synology-backup"
+        export_path: "/volume1/backups/proxmox"
+        mount_point: "/mnt/pve/nas-backup"
+        storage_id: "nas-backup"
         content_types: "backup"
         mount_options: "rw,async,hard,nolock"
 
       shared:
         export_path: "/volume1/homelab-shared"
-        mount_point: "/mnt/pve/synology-shared"
-        storage_id: "synology-shared"
+        mount_point: "/mnt/pve/nas-shared"
+        storage_id: "nas-shared"
         content_types: "iso,vztmpl,snippets"
         mount_options: "rw,sync,hard,nolock"
 
       vm_storage:
         export_path: "/volume1/homelab-data"
-        mount_point: "/mnt/pve/synology-vm-storage"
-        storage_id: "synology-vm-storage"
+        mount_point: "/mnt/pve/nas-vm-storage"
+        storage_id: "nas-vm-storage"
         content_types: "images,rootdir"
         mount_options: "rw,sync,hard,nolock"
 
@@ -63,27 +63,42 @@
         state: present
         update_cache: true
 
-    # ===== PHASE 2: CREATE MOUNT POINTS (IDEMPOTENT) =====
-    - name: Create mount point directory for backup
+    # ===== PHASE 2: CHECK AND CREATE MOUNT POINTS (IDEMPOTENT) =====
+    - name: Check if backup mount point exists
+      ansible.builtin.stat:
+        path: "{{ nfs_shares.backup.mount_point }}"
+      register: backup_mount_exists
+
+    - name: Create backup mount point directory
       ansible.builtin.file:
         path: "{{ nfs_shares.backup.mount_point }}"
         state: directory
         mode: '0755'
-      ignore_errors: true
+      when: not backup_mount_exists.stat.exists
 
-    - name: Create mount point directory for shared
+    - name: Check if shared mount point exists
+      ansible.builtin.stat:
+        path: "{{ nfs_shares.shared.mount_point }}"
+      register: shared_mount_exists
+
+    - name: Create shared mount point directory
       ansible.builtin.file:
         path: "{{ nfs_shares.shared.mount_point }}"
         state: directory
         mode: '0755'
-      ignore_errors: true
+      when: not shared_mount_exists.stat.exists
 
-    - name: Create mount point directory for vm_storage
+    - name: Check if vm_storage mount point exists
+      ansible.builtin.stat:
+        path: "{{ nfs_shares.vm_storage.mount_point }}"
+      register: vm_storage_mount_exists
+
+    - name: Create vm_storage mount point directory
       ansible.builtin.file:
         path: "{{ nfs_shares.vm_storage.mount_point }}"
         state: directory
         mode: '0755'
-      ignore_errors: true
+      when: not vm_storage_mount_exists.stat.exists
 
     # ===== PHASE 3: MOUNT NFS SHARES (IDEMPOTENT) =====
     - name: Check if backup share is mounted
@@ -149,14 +164,6 @@
         msg: "NFS mounts verified and accessible"
 
     # ===== PHASE 4: CREATE SUBDIRECTORIES ON NFS SHARES =====
-    - name: Create proxmox subdirectory in backup share
-      ansible.builtin.file:
-        path: "{{ nfs_shares.backup.mount_point }}/proxmox"
-        state: directory
-        mode: '0755'
-      delegate_to: "{{ groups['proxmox_cluster_members'][0] }}"
-      run_once: true
-
     - name: Create template directories in shared storage
       ansible.builtin.file:
         path: "{{ nfs_shares.shared.mount_point }}/{{ item }}"
@@ -287,7 +294,7 @@
     - name: Create memory check alias in bashrc
       ansible.builtin.lineinfile:
         path: /root/.bashrc
-        line: "alias memcheck='free -h && echo && echo \"Top 10 memory consumers:\" && ps aux --sort=-%mem | head -n 11'"
+        line: alias memcheck='free -h && echo && echo "Top 10 memory consumers:" && ps aux --sort=-%mem | head -n 11'
         state: present
 
     # ===== PHASE 8: CREATE COMPLETION MARKER =====
@@ -512,7 +519,7 @@
 
   vars:
     backup_schedule:
-      storage: "synology-backup"
+      storage: "nas-backup"
       schedule: "sun 02:00"
       retention: 4
       mode: "snapshot"
@@ -587,7 +594,7 @@
 
 # ===== PLAY 5: Final Verification =====
 - name: Final Storage and Replication Verification
-  hosts: all
+  hosts: proxmox_cluster_members
   become: true
   gather_facts: true
 
@@ -605,7 +612,7 @@
     - name: Verify NFS mounts
       ansible.builtin.shell: |
         set -o pipefail
-        df -h | grep synology
+        df -h | grep nas
       args:
         executable: /bin/bash
       register: final_nfs_check
@@ -629,9 +636,9 @@
 
           Storage Available:
             - local-zfs: ~857GB (local VM storage with replication)
-            - synology-backup: Backups only
-            - synology-shared: ISO, templates, snippets
-            - synology-vm-storage: HA VMs (instant failover)
+            - nas-backup: Backups only (/volume1/backups/proxmox)
+            - nas-shared: ISO, templates, snippets
+            - nas-vm-storage: HA VMs (instant failover)
 
           Test VM:
             - VMID: 900 (replication-test)
@@ -652,16 +659,16 @@
           =========================================
 
           All nodes configured with:
-            ✓ NFS storage (3 mounts from Synology)
+            ✓ NFS storage (3 mounts from NAS)
             ✓ ZFS replication (test VM 900 created)
             ✓ Backup schedule (Sunday 2AM, 4-week retention)
             ✓ Memory monitoring (5-minute checks)
 
           Storage Summary:
             - Local ZFS: ~857GB per node (replicated for HA)
-            - NFS Backup: /volume1/backups/proxmox
-            - NFS Shared: /volume1/homelab-shared (ISO, templates)
-            - NFS VM Storage: /volume1/homelab-data (instant failover VMs)
+            - NAS Backup: /volume1/backups/proxmox
+            - NAS Shared: /volume1/homelab-shared (ISO, templates)
+            - NAS VM Storage: /volume1/homelab-data (instant failover VMs)
 
           Next Actions:
             1. Run: ansible-playbook test-replication.yml

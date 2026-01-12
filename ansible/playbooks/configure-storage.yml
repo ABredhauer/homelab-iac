@@ -1,7 +1,7 @@
 # ansible/playbooks/configure-storage.yml
-# Phase 3: Storage Configuration
+# Phase 3: Storage Configuration (v5 - Improved VM Handling + ZFS Snapshot Fix)
 # - Mount NFS shares from NAS
-# - Create test VM on local ZFS storage
+# - Create test VM on local ZFS storage (with robust destruction/recreation)
 # - Configure and test ZFS replication between cluster nodes
 # - Set up backup schedule (4-week retention)
 # - Add memory monitoring (no swap configuration)
@@ -361,12 +361,45 @@
       changed_when: false
       failed_when: false
 
-    - name: Remove existing test VM if present
-      ansible.builtin.command: qm destroy {{ test_vm_id }} --purge
+    - name: Display VM existence status
+      ansible.builtin.debug:
+        msg: "VM {{ test_vm_id }} exists: {{ vm_exists_check.rc == 0 }}"
+
+    - name: Stop test VM if running
+      ansible.builtin.command: qm stop {{ test_vm_id }}
+      register: vm_stop
+      changed_when: vm_stop.rc == 0
+      failed_when: false
       when: vm_exists_check.rc == 0
+
+    - name: Wait for VM to fully stop
+      ansible.builtin.pause:
+        seconds: 3
+      when: vm_exists_check.rc == 0
+
+    - name: Destroy existing test VM
+      ansible.builtin.command: qm destroy {{ test_vm_id }} --purge
       register: vm_destroy
       changed_when: vm_destroy.rc == 0
       failed_when: false
+      when: vm_exists_check.rc == 0
+
+    - name: Wait for VM destruction to complete
+      ansible.builtin.pause:
+        seconds: 5
+      when: vm_exists_check.rc == 0
+
+    - name: Verify VM is destroyed
+      ansible.builtin.shell: |
+        set -o pipefail
+        qm list | grep -q "^\s*{{ test_vm_id }}\s"
+      args:
+        executable: /bin/bash
+      register: vm_verify_destroy
+      failed_when: vm_verify_destroy.rc == 0  # Fail if VM still exists
+      retries: 3
+      delay: 2
+      when: vm_exists_check.rc == 0
 
     - name: Create lightweight test VM
       ansible.builtin.command: >
@@ -384,6 +417,8 @@
         --description "Test VM for ZFS replication validation - Phase 3"
       register: vm_create
       changed_when: vm_create.rc == 0
+      retries: 3
+      delay: 5
 
     - name: Verify test VM was created
       ansible.builtin.command: qm config {{ test_vm_id }}
@@ -454,6 +489,29 @@
       ansible.builtin.pause:
         seconds: 5
 
+    - name: Create initial snapshot for replication base
+      ansible.builtin.shell: |
+        set -o pipefail
+        zfs snapshot local-zfs/vm-900-disk-0@repl-init
+      register: snapshot_create
+      changed_when: snapshot_create.rc == 0
+      failed_when: false
+      retries: 3
+      delay: 2
+
+    - name: Verify initial snapshot exists
+      ansible.builtin.shell: |
+        set -o pipefail
+        zfs list -t snapshot | grep "vm-900-disk-0@repl-init"
+      register: snapshot_verify
+      changed_when: false
+      failed_when: false
+
+    - name: Display snapshot status
+      ansible.builtin.debug:
+        msg: "Initial snapshot created: vm-900-disk-0@repl-init"
+      when: snapshot_verify.rc == 0
+
     - name: Create replication job using pvesr
       ansible.builtin.command: >
         pvesr create-local-job {{ replication_job_id }} {{ replication_target }}
@@ -478,7 +536,8 @@
       ansible.builtin.command: pvesr run --id {{ replication_job_id }}
       register: repl_run
       changed_when: repl_run.rc == 0
-      failed_when: false
+      retries: 3
+      delay: 5
 
     - name: Wait for initial replication (30 seconds)
       ansible.builtin.pause:
@@ -504,6 +563,7 @@
           Target: {{ replication_target }}
           Schedule: {{ replication_interval }}
           Rate Limit: {{ rate_limit }} MB/s
+          Initial Snapshot: vm-900-disk-0@repl-init
           Configured: {{ ansible_date_time.iso8601 }}
 
           Status: Check with: pvesr status --guest {{ test_vm_id }}
@@ -631,6 +691,7 @@
           Configuration Summary:
             - NFS storage mounted (3 shares)
             - ZFS replication configured (test VM 900)
+            - Initial snapshot created (vm-900-disk-0@repl-init)
             - Backup schedule configured (weekly, 4-week retention)
             - Memory monitoring enabled (no swap)
 
@@ -661,6 +722,7 @@
           All nodes configured with:
             ✓ NFS storage (3 mounts from NAS)
             ✓ ZFS replication (test VM 900 created)
+            ✓ Initial snapshot (vm-900-disk-0@repl-init)
             ✓ Backup schedule (Sunday 2AM, 4-week retention)
             ✓ Memory monitoring (5-minute checks)
 

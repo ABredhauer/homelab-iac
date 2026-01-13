@@ -272,11 +272,6 @@
       when:
         - node_cluster_check is failed or 'Quorate' not in node_cluster_check.stdout
       block:
-        - name: Install QDevice package on member
-          ansible.builtin.apt:
-            name: corosync-qdevice
-            state: present
-
         - name: Get cluster fingerprint from master
           ansible.builtin.shell: |
             set -o pipefail
@@ -506,6 +501,13 @@
           - (node_count | int) >= 2
         fail_msg: "QDevice requires even number of nodes. Found: {{ node_count }} (odd number not supported)"
         success_msg: "Cluster has {{ node_count }} nodes (even) - ready for QDevice"
+
+    - name: Ensure QDevice package is installed on all members
+      ansible.builtin.apt:
+        name: corosync-qdevice
+        state: present
+      delegate_to: "{{ item }}"
+      loop: "{{ groups['proxmox_cluster_members'] }}"
 
     - name: Check if QDevice already configured
       ansible.builtin.command: pvecm status
